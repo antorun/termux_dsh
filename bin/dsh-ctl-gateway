@@ -60,6 +60,18 @@ const TMPDIR = process.env.TMPDIR || PREFIX + '/tmp'
 const SITES_JSON = DSH_HOME + '/sites.json'
 const ACCOUNTS_JSON = DSH_HOME + '/accounts.json'   // 旧版单账号存档，只用来迁移
 
+/* dsh 自己（npm 全局包）的路径 —— 版本更新功能用得到。 */
+const SHARE = PREFIX + '/share/dsh-ctl'
+const PATCHER = SHARE + '/patches.py'          // JS 补丁器（随仓库下发，见 §6.8）
+const FLOCK_BUILD = SHARE + '/build-flock.sh'  // android-arm64 的 flock 原生插件编译脚本
+const DSH_PKG = '@deepseek-ai/dsh'
+const DSH_SCOPE = PREFIX + '/lib/node_modules/@deepseek-ai'
+const DSH_DIR = DSH_SCOPE + '/dsh'
+const DSH_PKG_JSON = DSH_DIR + '/package.json'
+const FLOCK_NATIVE = DSH_DIR + '/node_modules/@deepseek-ai/node-addon-system-android-arm64/bin/system.node'
+const NPM_BIN = BIN + '/npm'
+const NPM_UPGRADE_TIMEOUT = 900000   // 15 分钟：Termux 上装 300MB 级的包，别急着判死
+
 const CHILD_ENV = Object.assign({}, process.env, {
   PREFIX,
   DSH_HOME,
@@ -405,6 +417,229 @@ async function readVersion() {
   return (r.out || '').trim().split('\n')[0]
 }
 
+/* ------------------------------------------------------- dsh 版本更新（只读探测） */
+
+/**
+ * 本地装着的 dsh 版本 —— 直接读 package.json。
+ *
+ * 不走 `dsh --version`：那要起一个 node 进程（Termux 上冷启动 1~3 秒），
+ * 而版本号就写在文件里，读一下是微秒级的事。`installedVersion()` 还与
+ * npm 的落盘结果严格一致，拿来做「升没升上去」的判据比跑进程更可靠。
+ */
+function installedVersion() {
+  try {
+    const j = JSON.parse(readText(DSH_PKG_JSON))
+    return String(j.version || '')
+  } catch { return '' }
+}
+
+function flockNativeOk() {
+  try { return fs.statSync(FLOCK_NATIVE).size > 0 } catch { return false }
+}
+
+/** 极简 HTTPS GET → JSON。只用于打 npm registry，超时就放弃。 */
+function httpsJson(url, timeoutMs) {
+  return new Promise((resolve) => {
+    let req
+    try {
+      req = https.get(url, {
+        timeout: timeoutMs || 12000,
+        headers: { accept: 'application/json', 'user-agent': 'dsh-ctl-gateway/1.0' },
+      }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return resolve({ ok: false, code: res.statusCode }) }
+        let b = ''
+        res.setEncoding('utf8')
+        res.on('data', (d) => { b += d; if (b.length > 4e6) req.destroy() })
+        res.on('end', () => {
+          try { resolve({ ok: true, json: JSON.parse(b) }) } catch { resolve({ ok: false, why: '返回不是 JSON' }) }
+        })
+      })
+    } catch (e) { return resolve({ ok: false, why: e.message }) }
+    req.on('error', (e) => resolve({ ok: false, why: e.message }))
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, why: '超时' }) })
+  })
+}
+
+/**
+ * 查 @deepseek-ai/dsh 的 dist-tags。
+ *
+ * 打的是 registry 的**小端点** `/-/package/<pkg>/dist-tags`（几百字节），
+ * 而不是整包文档（那个几百 KB）。设备实测 1~2 秒。
+ * 官方源失败就退回 npmmirror —— 国内网络下这个兜底经常决定成败。
+ */
+async function fetchDistTags(timeoutMs) {
+  const regs = ['https://registry.npmjs.org', 'https://registry.npmmirror.com']
+  const tried = []
+  for (const reg of regs) {
+    const url = reg + '/-/package/' + encodeURIComponent(DSH_PKG) + '/dist-tags'
+    const t0 = Date.now()
+    const r = await httpsJson(url, timeoutMs)
+    if (r.ok && r.json && (r.json.latest || r.json.next)) {
+      return { ok: true, tags: r.json, registry: reg, ms: Date.now() - t0 }
+    }
+    tried.push(reg.replace(/^https:\/\//, '') + ' → ' + (r.why || ('HTTP ' + r.code)))
+  }
+  return { ok: false, tried }
+}
+
+const CHANNELS = ['latest', 'next', 'alpha']
+function pickChannel(v) {
+  const c = clean(v)
+  return CHANNELS.indexOf(c) >= 0 ? c : 'latest'
+}
+
+/** 只读：现在装着什么、远端有什么。安全的那个按钮就是这个。 */
+async function apiDshCheck(body) {
+  const cur = installedVersion()
+  const channel = pickChannel(body && body.channel)
+  const r = await fetchDistTags(20000)
+  if (!r.ok) {
+    return {
+      ok: !!cur, current: cur, channel, latest: '', tags: {}, hasUpdate: false,
+      out: '查不到远端版本（' + (r.tried || []).join('；') + '）',
+    }
+  }
+  const latest = String(r.tags[channel] || r.tags.latest || '')
+  return {
+    ok: true,
+    current: cur,
+    channel,
+    latest,
+    tags: r.tags,
+    hasUpdate: !!(cur && latest && cur !== latest),
+    registry: r.registry,
+    ms: r.ms,
+    patcher: fs.existsSync(PATCHER),
+    flockOk: flockNativeOk(),
+  }
+}
+
+/**
+ * 升级 dsh：装新版 → 重打 JS 补丁 → 补 flock 原生插件 → 重启 → 验证。
+ * 任何一步失败都**自动回滚**到动手前的版本。
+ *
+ * 为什么必须重打补丁：`@deepseek-ai/dsh` 是为 glibc Linux/macOS 构建的，
+ * Termux(Android/bionic) 上有几处硬不兼容（见 patches.py 顶部）。这些补丁直接改
+ * node_modules 里的源码，而 `npm install -g` 会把整个包目录换成官方版 ——
+ * 补丁全丢、flock 那个本地编译的 .node 也没了。升完不补 = 服务起不来。
+ *
+ * 回滚用**改名**而不是复制：305MB 的目录 `mv` 是瞬时的，`cp -a` 要几十秒。
+ * 备份放在同一父目录下（同一文件系统），失败时删掉装坏的再改回来即可。
+ */
+async function apiDshUpgrade(body) {
+  const steps = []
+  const before = installedVersion()
+  const channel = pickChannel(body && body.channel)
+  const forced = !!(body && body.force)
+
+  if (!fs.existsSync(PATCHER)) {
+    return { ok: false, out: '补丁器缺失：' + PATCHER + '\n它随 install-ctl.sh 一起装到设备；缺了就没法在升级后把补丁补回来，为免升级后起不来，这里直接不动手。' }
+  }
+
+  const r = await fetchDistTags(20000)
+  const want = clean(body && body.version, 64) || (r.ok ? String(r.tags[channel] || '') : '')
+  if (!want) {
+    return { ok: false, out: '拿不到目标版本号（远端查不到，也没手动指定）。' + (r.ok ? '' : (r.tried || []).join('；')) }
+  }
+  if (before === want && !forced) {
+    return { ok: false, out: '现在装的就是 ' + want + '。要原地重装请勾「强制重装」。', current: before }
+  }
+  if (!/^\d+\.\d+\.\d+/.test(want)) return { ok: false, out: '版本号看起来不对：' + want }
+
+  const bak = DSH_SCOPE + '.bak-' + Date.now()
+  let renamed = false
+  let npmOk = false
+
+  // 1) 备份：把整个 scope 目录改名挪走（瞬时）
+  try {
+    fs.renameSync(DSH_SCOPE, bak)
+    renamed = true
+    steps.push({ cmd: 'mv ' + DSH_SCOPE + ' ' + bak, code: 0, out: '(瞬时的改名备份，' + before + ')' })
+  } catch (e) {
+    return { ok: false, out: '备份失败，没敢继续：' + e.message }
+  }
+
+  const rollback = async (why) => {
+    const rb = []
+    try {
+      if (fs.existsSync(DSH_SCOPE)) fs.rmSync(DSH_SCOPE, { recursive: true, force: true })
+      if (renamed && fs.existsSync(bak)) fs.renameSync(bak, DSH_SCOPE)
+      rb.push({ cmd: '回滚到 ' + before, code: 0, out: '已把备份改回 ' + DSH_SCOPE })
+    } catch (e) {
+      rb.push({ cmd: '回滚', code: 1, out: '回滚也失败了：' + e.message + '\n备份还在 ' + bak })
+    }
+    const rr = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
+    await sleep(4000)
+    const sr = await runFile(BIN + '/sv', ['status', 'dsh-web'], 10000)
+    rb.push({ cmd: 'sv restart dsh-web', code: rr.code, out: sr.out })
+    return { ok: false, out: why + '\n\n已自动回滚。', steps: steps.concat(rb), rolledBack: true, current: installedVersion(), state: await buildState() }
+  }
+
+  // 2) 装新版
+  const nr = await runFile(NPM_BIN, ['install', '-g', DSH_PKG + '@' + want], NPM_UPGRADE_TIMEOUT)
+  steps.push({ cmd: 'npm install -g ' + DSH_PKG + '@' + want, code: nr.code, out: clipTail(nr.out, 4000) })
+  const nowVer = installedVersion()
+  if (nr.code !== 0 || nowVer !== want) {
+    return await rollback('装 ' + want + ' 这一步没成（npm 退出码 ' + nr.code + '，落盘版本 ' + (nowVer || '读不到') + '）。')
+  }
+  npmOk = true
+
+  // 3) 重打 JS 补丁 —— 补丁器自己的退出码就是判据（0 全成 / 1 有补丁没打成 / 2 环境问题）
+  const pr = await runFile(BIN + '/python3', [PATCHER], 180000)
+  steps.push({ cmd: 'python3 patches.py', code: pr.code, out: clipTail(pr.out, 6000) })
+  if (pr.code !== 0) {
+    return await rollback('新版本的源码跟补丁对不上了（patches.py 退出码 ' + pr.code +
+      '）。上游很可能改了被补丁的那几个文件，硬留着会起不来。')
+  }
+
+  // 4) flock 原生插件：npm 重装会把它冲掉，缺了就现编
+  let flockNote = ''
+  if (!flockNativeOk()) {
+    if (fs.existsSync(FLOCK_BUILD)) {
+      const br = await runFile(BIN + '/bash', [FLOCK_BUILD], 600000)
+      steps.push({ cmd: 'build-flock.sh', code: br.code, out: clipTail(br.out, 3000) })
+      flockNote = flockNativeOk() ? '已重新编译 ✓' : '编译后仍然缺失 ✗'
+    } else {
+      flockNote = '编译脚本缺失（' + FLOCK_BUILD + '），没编'
+    }
+  } else {
+    flockNote = '不需要（新包装完就带着可用的 .node）'
+  }
+
+  // 5) 重启 + 验证
+  const rr = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
+  await sleep(4000)
+  const sr = await runFile(BIN + '/sv', ['status', 'dsh-web'], 10000)
+  steps.push({ cmd: 'sv restart dsh-web', code: rr.code, out: sr.out })
+  const up = /^run:/.test(String(sr.out || '').trim())
+  if (!up) {
+    return await rollback('新版本 ' + want + ' 装上了、补丁也打了，但 dsh-web 起不来：\n' + String(sr.out || '').trim())
+  }
+
+  const ver = await readVersion()
+  // 备份先留着：这次是人工点确认的升级，出事要能立刻退回去。等下次升级再清上一份。
+  steps.push({ cmd: 'dsh --version', code: 0, out: ver })
+  steps.push({ cmd: '备份', code: 0, out: bak + '（留着，确认新版没问题后可手动删）' })
+
+  return {
+    ok: true,
+    out: '已从 ' + before + ' 升到 ' + want + '，补丁已重打，dsh-web 已重启。\nflock 原生插件：' + flockNote,
+    from: before,
+    to: want,
+    npmOk,
+    steps,
+    state: await buildState(),
+  }
+}
+
+/** 长输出只留头尾 —— npm 能吐几千行，全塞回面板既没用又卡。 */
+function clipTail(s, max) {
+  const t = String(s == null ? '' : s)
+  if (t.length <= max) return t
+  const half = Math.floor(max / 2)
+  return t.slice(0, half) + '\n…（中间省略 ' + (t.length - max) + ' 字符）…\n' + t.slice(-half)
+}
+
 /* ------------------------------------------------------------------ 鉴权 */
 
 /** 把请求原样探到 dsh 的 /api 上：404=围栏+鉴权都过；401=未登录；403=围栏拒绝。 */
@@ -446,6 +681,11 @@ async function buildState() {
     migrated: sc.migrated,
     credentials: creds,
     presets: PRESETS,
+    dshFlavor: {
+      patcher: fs.existsSync(PATCHER),
+      flockOk: flockNativeOk(),
+      share: SHARE,
+    },
     paths: { dshHome: DSH_HOME, keys: KEYS, serviceDir: SVD, sites: SITES_JSON, accounts: ACCOUNTS_JSON },
   }
 }
@@ -866,6 +1106,8 @@ const CTL_API = {
   verify: apiVerify,
   models: apiModels,
   health: apiHealth,
+  dshcheck: apiDshCheck,
+  dshupgrade: apiDshUpgrade,
   restart: async () => {
     const r = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
     await sleep(4000)

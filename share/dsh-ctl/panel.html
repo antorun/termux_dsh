@@ -100,7 +100,11 @@ th{color:var(--dim);font-weight:500;font-size:12px}
 .mbox .g2,.mbox .g3{margin-bottom:10px}
 .mhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
 .mhead h3{font-size:15px;margin:0}
-.mfoot{display:flex;justify-content:flex-end;gap:8px;margin:14px 0 0}
+/* 弹窗里的按钮必须永远点得到。更新结果能拉到几百像素高，footer 会被挤出可视区 ——
+   用户看到的是「按钮没了」，以为是卡住了。（实测：内容 781px、容器 632px 时「关闭」落到
+   y=770，已在 720 高的视口外。）sticky 贴住滚动容器底部，顺带把接口 / 密钥弹窗也一起兜住。 */
+.mfoot{display:flex;justify-content:flex-end;gap:8px;margin:14px 0 0;
+  position:sticky;bottom:0;background:var(--panel);padding:10px 0 2px;border-top:1px solid var(--bd)}
 /* 弹窗内的校验报错。以前出错只写页面底部的「输出」卡片，被弹窗遮着 —— 用户点了
    「创建接口」看不到任何反应，以为是按钮坏了。所以错误原因必须显示在这里。 */
 .merr{background:rgba(255,96,96,.10);border:1px solid #6d2c2c;color:#ff9d9d;
@@ -132,6 +136,24 @@ th{color:var(--dim);font-weight:500;font-size:12px}
 .sk{margin-top:10px}
 .subhead{font-size:11.5px;color:var(--dim);font-weight:600;letter-spacing:.08em;text-transform:uppercase;margin:12px 0 8px}
 #out{white-space:pre-wrap}
+
+/* ---------------- 版本行：当前版本 / 远端版本 / 更新入口 ---------------- */
+.chip .no-up{color:var(--ok)}
+.chip .has-up{color:var(--warn);font-weight:600}
+.chip.new{border-color:#5c4a1f;background:#1e1a10}
+.vmsg{font-size:12px;color:var(--dim)}
+/* 更新弹窗里的分步结果：每一步一行，命令 + 退出码 + 输出 */
+.ustep{border:1px solid var(--bd);border-radius:8px;padding:9px 11px;margin:0 0 8px;background:var(--panel3)}
+.ustep .ucmd{font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--acc);word-break:break-all}
+.ustep .ucode{font-size:11.5px;color:var(--dim);margin-left:8px}
+.ustep pre{margin:7px 0 0;max-height:170px;background:#0b0d11}
+/* 分步结果自己滚，别把整个弹窗顶长 */
+#uLog{max-height:44vh;overflow:auto}
+.ustep.bad{border-color:#5a2a2a}
+.ustep.good{border-color:#25543a}
+.ustep.run{border-color:#2b4a80}
+.ustep.run .ucode{color:var(--acc)}
+.uwait{font-size:12.5px;color:var(--warn);margin:0 0 8px}
 </style>
 </head>
 <body>
@@ -147,7 +169,14 @@ th{color:var(--dim);font-weight:500;font-size:12px}
   <div class="card">
     <h2>服务与运行环境</h2>
     <div class="row" id="services"></div>
-    <p class="muted" style="margin:10px 0 0" id="envline"></p>
+    <div class="row" style="margin:10px 0 0">
+      <span class="chip" id="verNow" title="当前装着的 dsh 版本"><span class="dot" id="verDot"></span>dsh <b id="verTxt">…</b></span>
+      <span class="chip new" id="verNew" style="display:none"></span>
+      <button class="mini" id="btnChk" onclick="checkDsh(false)" title="去 npm registry 查最新版。只读操作，不动设备">检查更新</button>
+      <button class="mini primary" id="btnUpd" style="display:none" onclick="openUpdModal()">更新</button>
+      <span class="vmsg" id="verMsg"></span>
+    </div>
+    <p class="muted" style="margin:6px 0 0" id="envline"></p>
     <p class="row" style="margin:12px 0 0">
       <button onclick="load()">刷新</button>
       <button onclick="act('restart')">重启 dsh-web</button>
@@ -250,6 +279,52 @@ th{color:var(--dim);font-weight:500;font-size:12px}
   </div>
 </div>
 
+<!-- dsh 版本更新：从 npm 装新版，再把 Termux 补丁重打一遍（npm 升级会把补丁冲掉） -->
+<div id="umodal" class="modal" style="display:none" onclick="if(event.target===this)closeUpdModal()">
+  <div class="mbox" style="max-width:720px">
+    <div class="mhead">
+      <div>
+        <h3 id="uTitle">更新 dsh</h3>
+        <p class="muted" id="uHint" style="margin:3px 0 0">从 npm 装新版，再把 Termux 补丁重打一遍</p>
+      </div>
+      <button class="mini" id="uX" onclick="closeUpdModal()" title="关闭">✕</button>
+    </div>
+
+    <p class="merr" id="uErr" style="display:none"></p>
+
+    <div id="uForm">
+      <div class="g3">
+        <div><label>通道</label>
+          <select id="uChan" onchange="updChan()">
+            <option value="latest">latest</option>
+            <option value="next">next</option>
+            <option value="alpha">alpha</option>
+          </select></div>
+        <div><label>目标版本（可手填 registry 上的任意版本）</label>
+          <input id="uVer" oninput="updPlan()" placeholder="例如 0.2.0-rc.2"></div>
+        <div><label>现在装的是</label><input id="uFrom" readonly></div>
+      </div>
+      <p class="hint" style="margin:10px 0 0">
+        <label style="display:inline;color:var(--fg)">
+          <input type="checkbox" id="uForce" style="width:auto" onchange="updPlan()"> 强制重装（版本号一样时也重跑一遍）
+        </label>
+      </p>
+      <div class="ustep" style="margin-top:12px">
+        <div class="ucmd">这一趟会做的事</div>
+        <pre id="uPlan"></pre>
+      </div>
+    </div>
+
+    <div id="uLog" style="display:none"></div>
+
+    <div class="mfoot">
+      <button id="uCancel" onclick="closeUpdModal()">取消</button>
+      <button class="primary" id="uOk" onclick="doUpgrade()">确认更新</button>
+    </div>
+    <p class="hint" id="uFoot">升级期间 dsh-web 会重启，主界面断几十秒。任何一步失败都会自动退回升级前的版本（用改名备份，秒级还原）。</p>
+  </div>
+</div>
+
 <script>
 var ST = null;                                        // 服务端最新状态
 var DRAFT = { active:{site:'',token:''}, sites:[] };  // 本地编辑中的清单
@@ -328,7 +403,7 @@ function renderServices(st){
     return '<span class="chip"><span class="dot ' + cls + '"></span>' + esc(s.name) + ' · ' + txt + '</span>';
   }).join('');
   document.getElementById('envline').textContent =
-    'dsh ' + (st.dshVersion || '?') + ' · node ' + st.nodeVersion + ' · 主机 ' + st.host +
+    'node ' + st.nodeVersion + ' · 主机 ' + st.host +
     (st.lanIp ? ' · 网关 http://' + st.lanIp + ':8030/' : '');
 }
 
@@ -1318,6 +1393,8 @@ function applyState(st){
   });
 
   renderServices(st); renderPresets(st); renderList(); renderSub(st);
+  VER.cur = st.dshVersion || VER.cur;
+  renderVer(null);
   var hint = '配置落在 profiles/{web,headless}/cordis.patch.yml，清单存 ' + st.paths.sites + '，已存密钥在 ' + st.paths.keys + '。';
   if (st.migrated) hint = '（已从现有配置 / 旧账号清单读出，保存后会存进 ' + st.paths.sites + '）' + hint;
   document.getElementById('savehint').textContent = hint;
@@ -1328,6 +1405,216 @@ function clearAll(){
   api('apply', {mode:'clear', restart:true}).then(function(j){
     out((j.ok ? '✓ ' : '✗ ') + '已清空自定义后端\n\n' + (j.out || ''));
     if (j.state) applyState(j.state);
+  });
+}
+
+/* ---------------------------------------------------------------- dsh 版本更新 */
+
+var VER = { cur:'', latest:'', tags:{}, channel:'latest', hasUpdate:false, patcher:true, flockOk:true };
+var UPD = { busy:false };   // 升级正在跑：这期间不许关弹窗
+
+/**
+ * 粗比 semver —— 只要区分「这是升还是降」就够了。
+ * 为什么需要：切到 alpha 通道时，远端可能**比本机还旧**（实测：本机 0.2.0-rc.2，
+ * alpha 是 0.1.7-alpha.2）。这时按钮还写「更新到 0.1.7-alpha.2」会让人以为在升级。
+ * prerelease 段按字符串比（'alpha.2' < 'rc.2'）—— 够用，不追求 semver 全精度。
+ */
+function cmpVer(a, b){
+  var A = String(a || '').replace(/^v/, '').split('-');
+  var B = String(b || '').replace(/^v/, '').split('-');
+  var pa = A[0].split('.'), pb = B[0].split('.');
+  for (var i = 0; i < 3; i++){
+    var x = Number(pa[i] || 0), y = Number(pb[i] || 0);
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  var ra = A[1] || '', rb = B[1] || '';
+  if (!ra && !rb) return 0;
+  if (!ra) return 1;        // 正式版 > 任何 prerelease（semver 规则）
+  if (!rb) return -1;
+  return ra < rb ? -1 : (ra > rb ? 1 : 0);
+}
+
+/** 版本行：当前版本 + 远端版本 + 更新入口。纯读，不发写请求。 */
+function renderVer(j){
+  j = j || {};
+  var cur = VER.cur || (ST && ST.dshVersion) || '';
+  document.getElementById('verTxt').textContent = cur || '?';
+
+  var flavor = (ST && ST.dshFlavor) || {};
+  var patcher = (typeof j.patcher === 'boolean') ? j.patcher : flavor.patcher !== false;
+  var flockOk = (typeof j.flockOk === 'boolean') ? j.flockOk : flavor.flockOk !== false;
+  VER.patcher = patcher;
+
+  document.getElementById('verDot').className = 'dot ' + (patcher ? 'ok' : 'no');
+  document.getElementById('verNow').title = patcher
+    ? '当前 dsh 版本。补丁器在位，这台设备可以直接升'
+    : '当前 dsh 版本。补丁器缺失（' + (flavor.share || 'share/dsh-ctl') + '/patches.py）——' +
+      'npm 升级会把 Termux 补丁一起冲掉，补不回来服务就起不来，所以这里不给升。先重跑 install-ctl.sh。';
+
+  var chipNew = document.getElementById('verNew');
+  var btn = document.getElementById('btnUpd');
+  var msg = document.getElementById('verMsg');
+
+  if (VER.hasUpdate && VER.latest) {
+    var older = cmpVer(VER.latest, cur) < 0;      // 远端比本机旧 = 这是条回退路
+    chipNew.style.display = '';
+    chipNew.innerHTML = '远端 <b class="has-up">' + esc(VER.latest) + '</b>';
+    btn.style.display = '';
+    btn.textContent = (older ? '回退到 ' : '更新到 ') + VER.latest;
+    btn.disabled = !patcher;
+    btn.title = patcher ? '' : '补丁器缺失，不能升级';
+    if (older && !msg.textContent) { msg.textContent = '（当前通道上这个比本机旧）'; msg.style.color = 'var(--warn)'; }
+  } else {
+    chipNew.style.display = 'none';
+    btn.style.display = 'none';
+  }
+
+  if (!patcher) { msg.textContent = '补丁器缺失，升级入口已禁用'; msg.style.color = 'var(--err)'; }
+  else if (!flockOk) { msg.textContent = 'flock 原生插件缺失（升级时会自动现编）'; msg.style.color = 'var(--warn)'; }
+  else if (VER.latest && !VER.hasUpdate) { msg.textContent = '已是最新'; msg.style.color = ''; }
+  else if (!msg.textContent || msg.textContent === '已是最新') { msg.textContent = ''; msg.style.color = ''; }
+}
+
+/** quiet=true：页面加载时那次静默对表 —— 不禁用按钮、不覆盖输出面板。 */
+function checkDsh(quiet){
+  var msg = document.getElementById('verMsg');
+  var btnChk = document.getElementById('btnChk');
+  if (!quiet) { btnChk.disabled = true; msg.textContent = '正在查 npm registry…'; msg.style.color = ''; }
+  return api('dshcheck', { channel: VER.channel }, quiet).then(function(j){
+    btnChk.disabled = false;
+    if (j.current) VER.cur = j.current;
+    VER.latest = j.latest || '';
+    VER.tags = j.tags || {};
+    VER.hasUpdate = !!j.hasUpdate;
+    renderVer(j);
+    try { sessionStorage.setItem('dsh-ver-at', String(Date.now())); } catch (e) {}
+    if (!quiet) {
+      if (j.hasUpdate) out('发现新版本：' + j.current + ' → ' + j.latest +
+        '\nregistry ' + (j.registry || '?') + '，查询 ' + (j.ms || '?') + ' ms。点「更新到 ' + j.latest + '」走升级。');
+      else out('已是最新：' + (j.current || '?') + (j.latest ? '（远端 ' + j.latest + '）' : '') + (j.out ? '\n' + j.out : ''));
+    }
+    return j;
+  });
+}
+
+function uErrHide(){ var e = document.getElementById('uErr'); e.style.display = 'none'; }
+function uErrShow(t){ var e = document.getElementById('uErr'); e.textContent = t; e.style.display = ''; }
+
+function updChan(){
+  var c = document.getElementById('uChan').value;
+  VER.channel = c;
+  var t = VER.tags || {};
+  if (t[c]) document.getElementById('uVer').value = t[c];
+  updPlan();
+}
+
+function updPlan(){
+  var raw = (document.getElementById('uVer').value || '').trim();
+  var v = raw || '<目标版本>';
+  var force = document.getElementById('uForce').checked;
+  var lines = [
+    '1. npm install -g @deepseek-ai/dsh@' + v + (force ? '   （强制重装）' : ''),
+    '2. python3 share/dsh-ctl/patches.py        # npm 换包会冲掉补丁，必须重打',
+    '3. flock 原生插件缺了就现编（build-flock.sh，可能要一两分钟）',
+    '4. sv restart dsh-web + dsh --version 复验',
+    '',
+    '任一步失败 → 自动退回 ' + (VER.cur || '升级前的版本'),
+  ];
+  document.getElementById('uPlan').textContent = lines.join('\n');
+
+  // 按钮文案跟着目标版本走：切到比本机旧的通道时，「确认更新」会变成「确认回退」。
+  var okBtn = document.getElementById('uOk');
+  if (!UPD.busy && okBtn) {
+    var d = raw ? cmpVer(raw, VER.cur || (ST && ST.dshVersion)) : 0;
+    okBtn.textContent = d < 0 ? '确认回退' : '确认更新';
+  }
+}
+
+function openUpdModal(){
+  document.getElementById('uFrom').value = VER.cur || (ST && ST.dshVersion) || '?';
+  document.getElementById('uChan').value = VER.channel;
+  document.getElementById('uVer').value = VER.latest || '';
+  document.getElementById('uForce').checked = false;
+  uErrHide();
+  var log = document.getElementById('uLog');
+  log.style.display = 'none'; log.innerHTML = '';
+  document.getElementById('uForm').style.display = '';
+  document.getElementById('uFoot').style.display = '';
+  document.getElementById('uX').style.display = '';
+  var ok = document.getElementById('uOk');
+  ok.style.display = ''; ok.disabled = false; ok.textContent = '确认更新';
+  document.getElementById('uCancel').textContent = '取消';
+  updPlan();
+  document.getElementById('umodal').style.display = 'flex';
+}
+
+function closeUpdModal(){
+  // 用显式状态位，不认按钮上的文字 —— 之前就是靠 textContent === '执行中…' 判定，
+  // 结果跑完只把按钮 display:none 了、文字没换回来，弹窗再也关不掉。
+  if (UPD.busy) return;
+  document.getElementById('umodal').style.display = 'none';
+}
+
+function renderSteps(steps){
+  return (steps || []).map(function(s){
+    var cls = s.code === 0 ? 'good' : 'bad';
+    return '<div class="ustep ' + cls + '">' +
+      '<span class="ucmd">$ ' + esc(s.cmd) + '</span>' +
+      '<span class="ucode">退出码 ' + esc(s.code) + '</span>' +
+      (s.out ? '<pre>' + esc(s.out) + '</pre>' : '') +
+      '</div>';
+  }).join('');
+}
+
+function doUpgrade(){
+  var ver = (document.getElementById('uVer').value || '').trim();
+  if (!ver) { uErrShow('先填一个目标版本号（可以从通道下拉带出来）。'); return; }
+  if (!/^\d+\.\d+\.\d+/.test(ver)) { uErrShow('版本号看起来不像 semver：' + ver); return; }
+  var dir = cmpVer(ver, VER.cur || (ST && ST.dshVersion));
+  var verb = dir < 0 ? '回退' : (dir > 0 ? '更新' : '原地重装');
+  if (!confirm('把 dsh 从 ' + (VER.cur || '当前版本') + ' ' + verb + '到 ' + ver + ' ？\n\n' +
+      '过程中 dsh-web 会重启，主界面断几十秒。\n任何一步失败会自动回滚到 ' + (VER.cur || '原版本') + '。')) return;
+
+  var force = document.getElementById('uForce').checked;
+  var t0 = Date.now();
+  uErrHide();
+  document.getElementById('uForm').style.display = 'none';
+  document.getElementById('uFoot').style.display = 'none';
+  document.getElementById('uX').style.display = 'none';
+  var log = document.getElementById('uLog');
+  log.style.display = '';
+  log.innerHTML = '<p class="uwait" id="uWait">正在执行… 已等待 0 秒。别关页面、别刷新。</p>' +
+    '<div class="ustep run"><span class="ucmd">$ npm install -g @deepseek-ai/dsh@' + esc(ver) + '</span>' +
+    '<span class="ucode">进行中</span><pre>Termux 上装这个包要下载几十个子包，慢的话几分钟。请等。</pre></div>';
+  var ok = document.getElementById('uOk');
+  ok.disabled = true; ok.textContent = '执行中…';
+  UPD.busy = true;
+
+  var timer = setInterval(function(){
+    var w = document.getElementById('uWait');
+    if (w) w.textContent = '正在执行… 已等待 ' + Math.round((Date.now() - t0) / 1000) + ' 秒。别关页面、别刷新。';
+  }, 1000);
+
+  api('dshupgrade', { version: ver, channel: VER.channel, force: force }, true).then(function(j){
+    clearInterval(timer);
+    UPD.busy = false;
+    var head = j.ok
+      ? '<p style="color:var(--ok);font-weight:600;margin:0 0 10px">✓ 更新完成</p>'
+      : '<p style="color:var(--err);font-weight:600;margin:0 0 10px">✗ 没成' +
+        (j.rolledBack ? '（已自动回滚）' : '') + '</p>';
+    var lines = String(j.out || '').split('\n');
+    var body = lines.length > 1
+      ? '<pre style="margin:0 0 10px">' + esc(lines.slice(1).join('\n')) + '</pre>' : '';
+    log.innerHTML = head +
+      (lines[0] ? '<p class="muted" style="margin:0 0 8px">' + esc(lines[0]) + '</p>' : '') +
+      body + renderSteps(j.steps);
+    document.getElementById('uCancel').textContent = '关闭';
+    ok.style.display = 'none';
+    document.getElementById('uX').style.display = '';
+    if (j.state) applyState(j.state);
+    out((j.ok ? '✓ dsh 更新完成\n\n' : '✗ dsh 更新未完成\n\n') + (j.out || ''));
+    VER.cur = (j.state && j.state.dshVersion) || VER.cur;
+    checkDsh(true);     // 升完再对一次远端，版本行立刻回真实值
   });
 }
 
@@ -1373,6 +1660,16 @@ load().then(function(){
     healthAll(true).then(function(){ document.getElementById('out').textContent = keep; });
   } else {
     out('状态已就绪。健康检测 60 秒内不重复；要立刻重测就点对应接口行尾的「检测」。');
+  }
+
+  // 顺带对一次 dsh 版本（5 分钟内不重复）。这次同样不碰输出面板 ——
+  // 它只干一件事：该亮的时候把「远端 x.y.z / 更新到 …」亮出来。
+  // 想现在就知道结果，点版本行那个「检查更新」。
+  var vat = 0;
+  try { vat = Number(sessionStorage.getItem('dsh-ver-at') || 0) } catch (e) {}
+  if (Date.now() - vat > 300000) {
+    var keep2 = document.getElementById('out').textContent;
+    checkDsh(true).then(function(){ document.getElementById('out').textContent = keep2; });
   }
 });
 </script>

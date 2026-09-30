@@ -141,6 +141,36 @@ for (const [name, pat, want] of [
   console.log('机制 ' + name + ': ' + c + (good ? ' ✓' : ' ✗ 期望 ' + (want === 0 ? '0' : '≥' + want)))
 }
 
+// 7g) dsh 版本更新：版本行 —— 更新确认弹窗 —— 分步结果
+//     两条硬约束：① 升级前的「要做什么」必须写在弹窗里（升级会重启服务，不能点了不知道会发生什么）；
+//     ② 结果必须**分步**摆出来（哪一步失败、失败在哪要看得见），不能只回一句 ok/error。
+for (const [name, pat, want] of [
+  ['版本行容器 id="verNow"', /id="verNow"/, 1],
+  ['远端版本标记位 id="verNew"', /id="verNew"/, 1],
+  ['「检查更新」入口 checkDsh（定义+调用）', /checkDsh\(/, 3],
+  ['「更新」入口 openUpdModal（定义+调用）', /openUpdModal\(/, 2],
+  ['更新弹窗容器 id="umodal"', /id="umodal"/, 1],
+  ['目标版本输入 + 现有版本只读', /id="uVer"|id="uFrom"/, 2],
+  ['通道下拉（latest/next/alpha）', /id="uChan"/, 1],
+  ['强制重装开关 id="uForce"', /id="uForce"/, 1],
+  ['升级前的步骤预告 id="uPlan"', /id="uPlan"/, 1],
+  ['分步结果区 id="uLog" + renderSteps', /id="uLog"|renderSteps\(/, 2],
+  ['确认更新入口 doUpgrade', /doUpgrade\(/, 1],
+  ['升级走 /ctl/api/dshupgrade', /'dshupgrade'/, 1],
+  ['查版本走 /ctl/api/dshcheck', /'dshcheck'/, 1],
+  ['执行中显示已等待秒数', /已等待/, 2],
+  ['执行中不给关弹窗', /执行中…/, 1],
+  // 升 / 降必须分开说：切到 alpha 通道时远端可能比本机还旧（本机 0.2.0-rc.2 / alpha 0.1.7-alpha.2），
+  // 一律写「更新到」会让人以为在升级。
+  ['升降区分 cmpVer（定义+调用）', /cmpVer\(/, 4],
+  ['远端更旧时按钮说「回退到」', /'回退到 ' : '更新到 '/, 1],
+  ['版本不再塞在 envline 里（已挪到版本行）', /dsh ' \+ \(st\.dshVersion/, 0],
+]) {
+  const c = (s.match(new RegExp(pat.source, 'g')) || []).length
+  const good = want === 0 ? c === 0 : c >= want
+  console.log('版本 更新 ' + name + ': ' + c + (good ? ' ✓' : ' ✗ 期望 ' + (want === 0 ? '0' : '≥' + want)))
+}
+
 // 8) 需要存在的字样
 const must = ['接口列表', '新增接口', '增加密钥', 'id="modal"', 'persistManifest', 'draftPayload',
   '同一时间只有一把', '健康', '显示名', '环境变量名', '接口地址', '当前生效', '已写入 dsh', '编辑接口']

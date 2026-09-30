@@ -5,6 +5,10 @@
 .ssh_helper.sh
 .scp_push.sh
 
+# 本地临时试跑脚本（真机升级验证等），用完即删
+.up-run.sh
+.up-poll.sh
+
 # WorkBuddy 工作区元数据
 .workbuddy/
 

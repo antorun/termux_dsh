@@ -344,7 +344,72 @@ async function main () {
   await page.waitForTimeout(1400)
   eq('刷新后展开的还是那一个', await page.locator('.adet:visible').count(), 1)
 
-  console.log('\n== 12. 没有 JS 报错 ==')
+  console.log('\n== 12. dsh 版本更新 ==')
+  eq('版本行显示当前版本', (await page.locator('#verTxt').innerText()).trim(), '0.1.7-rc.2')
+  ok('页面加载那次静默对表已点亮远端版本',
+    (await page.locator('#verNew:visible').count()) === 1, await page.locator('#verNew').innerText())
+  ok('远端版本号是 0.2.0-rc.2', (await page.locator('#verNew').innerText()).includes('0.2.0-rc.2'))
+  eq('更新入口出现', await page.locator('#btnUpd:visible').count(), 1)
+  ok('更新按钮自带目标版本', (await page.locator('#btnUpd').innerText()).includes('0.2.0-rc.2'))
+
+  await page.locator('#btnUpd').click()
+  await page.waitForTimeout(200)
+  eq('更新弹窗打开', await page.locator('#umodal:visible').count(), 1)
+  eq('目标版本已回填', await page.locator('#uVer').inputValue(), '0.2.0-rc.2')
+  eq('现有版本回填', await page.locator('#uFrom').inputValue(), '0.1.7-rc.2')
+  ok('计划里写明要重打补丁', (await page.locator('#uPlan').innerText()).includes('patches.py'))
+
+  await page.locator('#uChan').selectOption('alpha')
+  await page.waitForTimeout(150)
+  eq('切通道后目标版本跟着变', await page.locator('#uVer').inputValue(), '0.1.7-alpha.2')
+  // alpha 通道上远端(0.1.7-alpha.2)比本机(0.1.7-rc.2 前身 0.1.7/0.2.0)旧 —— 按钮不许再说「更新」
+  eq('远端比本机旧时按钮说「确认回退」', (await page.locator('#uOk').innerText()).trim(), '确认回退')
+
+  await page.locator('#uVer').fill('abc')
+  await page.locator('#uOk').click()
+  await page.waitForTimeout(160)
+  eq('非法版本号：弹窗不关', await page.locator('#umodal:visible').count(), 1)
+  eq('非法版本号：红条可见', await page.locator('#uErr:visible').count(), 1)
+  eq('非法版本号：没发升级请求', posts.filter((x) => x === 'dshupgrade').length, 0)
+
+  // 失败路径：假后端看到版本号里的 fail，就演一遍「补丁锚点对不上 → 自动回滚」
+  await page.locator('#uVer').fill('9.9.9-fail')
+  await page.locator('#uOk').click()
+  await page.waitForTimeout(1600)
+  ok('失败时弹窗里说清「已自动回滚」', (await page.locator('#uLog').innerText()).includes('回滚'))
+  ok('失败的那一步标成了 bad', (await page.locator('#uLog .ustep.bad').count()) >= 1)
+  ok('失败时把补丁输出摆出来', (await page.locator('#uLog').innerText()).includes('patches.py'))
+  eq('失败后版本行没被改脏', (await page.locator('#verTxt').innerText()).trim(), '0.1.7-rc.2')
+  // 体验断言（不是实现断言）：结果一长，footer 会被顶出可视区，用户看到的是「按钮没了」。
+  // 真出过：内容 781px / 容器 632px，「关闭」落到 y=770，已跑出 720 高的视口。
+  ok('结果很长时「关闭」仍在视口内可点', await page.evaluate(() => {
+    var r = document.getElementById('uCancel').getBoundingClientRect()
+    return r.height > 0 && r.top >= 0 && Math.round(r.bottom) <= window.innerHeight
+  }))
+  await page.locator('#uCancel').click()
+  await page.waitForTimeout(150)
+  eq('关掉弹窗', await page.locator('#umodal:visible').count(), 0)
+
+  // 成功路径
+  const upBefore = posts.filter((x) => x === 'dshupgrade').length
+  await page.locator('#btnUpd').click()
+  await page.waitForTimeout(200)
+  await page.locator('#uChan').selectOption('latest')
+  await page.waitForTimeout(150)
+  eq('切回 latest 后目标版本是新版', await page.locator('#uVer').inputValue(), '0.2.0-rc.2')
+  await page.locator('#uVer').fill('0.2.0-rc.2')
+  await page.locator('#uOk').click()
+  await page.waitForTimeout(1800)
+  eq('升级请求发出去了', posts.filter((x) => x === 'dshupgrade').length, upBefore + 1)
+  ok('结果里逐步列出每一步', (await page.locator('#uLog .ustep').count()) >= 4)
+  ok('结果里能看到「重打补丁」那一步', (await page.locator('#uLog').innerText()).includes('patches.py'))
+  eq('版本行更新成新版本', (await page.locator('#verTxt').innerText()).trim(), '0.2.0-rc.2')
+  ok('输出面板记了一笔', (await page.locator('#out').innerText()).includes('dsh 更新完成'))
+  eq('升完已是最新，更新按钮收起来', await page.locator('#btnUpd:visible').count(), 0)
+  await page.locator('#uCancel').click()
+  await page.waitForTimeout(150)
+
+  console.log('\n== 13. 没有 JS 报错 ==')
   ok('无 pageerror / console.error', errors.length === 0, errors.join(' | '))
 
   await browser.close()

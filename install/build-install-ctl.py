@@ -23,6 +23,9 @@ PAYLOADS = {
     'patch-lan-settings': 'bin/dsh-patch-lan-settings',  # -> $PREFIX/bin/dsh-patch-lan-settings
     'dsh-ctl-run': 'runit/dsh-ctl-run',                  # -> $SVDIR/dsh-ctl/run
     'dsh-set-provider': 'bin/dsh-set-provider',          # -> $PREFIX/bin/dsh-set-provider
+    # 控制台「更新 dsh 版本」要用的两件：npm 换包会冲掉 Termux 补丁，升级后得就地重打。
+    'patches-py': 'install/patches.py',                  # -> $PREFIX/share/dsh-ctl/patches.py
+    'build-flock': 'install/build-flock.sh',             # -> $PREFIX/share/dsh-ctl/build-flock.sh
 }
 
 head = (HERE / 'install-ctl.head.sh').read_text()

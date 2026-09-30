@@ -57,12 +57,24 @@ B64_4
 put "$PREFIX/bin/dsh-set-provider" 755 <<'B64_6'
 ##PAYLOAD:dsh-set-provider##
 B64_6
+# 补丁器与 flock 编译脚本：控制台里的「更新 dsh 版本」要用。
+# npm install -g 会把 node_modules 里的补丁全冲掉，所以升级流程必须能就近拿到
+# patches.py 重打一遍 —— 放在 share/dsh-ctl/ 下（跟面板同级），路径由网关写死。
+put "$PREFIX/share/dsh-ctl/patches.py" 644 <<'B64_7'
+##PAYLOAD:patches-py##
+B64_7
+put "$PREFIX/share/dsh-ctl/build-flock.sh" 755 <<'B64_8'
+##PAYLOAD:build-flock##
+B64_8
 echo "  -- 语法自检 --"
 node --check "$PREFIX/bin/dsh-ctl-gateway" && echo "    dsh-ctl-gateway        OK"
 sh   -n "$PREFIX/bin/dsh-web-url"        && echo "    dsh-web-url            OK"
 bash -n "$PREFIX/bin/dsh-patch-lan-settings" && echo "    dsh-patch-lan-settings OK"
 bash -n "$PREFIX/bin/dsh-set-provider"   && echo "    dsh-set-provider       OK"
 "$PREFIX/bin/dsh-set-provider" --help >/dev/null 2>&1 && echo "    dsh-set-provider --help OK"
+python3 -c 'import ast,sys; ast.parse(open(sys.argv[1],encoding="utf-8").read())' \
+  "$PREFIX/share/dsh-ctl/patches.py" && echo "    patches.py             OK（语法）"
+bash -n "$PREFIX/share/dsh-ctl/build-flock.sh" && echo "    build-flock.sh         OK"
 echo "    控制台页面 $(wc -c <"$PREFIX/share/dsh-ctl/panel.html") 字节"
 
 step "2. 新建 dsh-ctl 服务"
@@ -224,6 +236,18 @@ else
   printf '  面板已去掉全部启用/全部停用  : %s  （期望 0）\n' "$(printf '%s' "$PANEL" | grep -cE 'setAllEnabled|全部启用|全部停用')"
   printf '  面板没有直写 enabled 的地方  : %s  （期望 0）\n' "$(printf '%s' "$PANEL" | grep -cE '\.enabled *= *true')"
   printf '  网关有归一化 normalizeActive : %s  （期望 ≥2）\n' "$(printf '%s' "$GW" | grep -c 'normalizeActive(')"
+  echo
+  echo "  -- dsh 版本更新（装新版 → 重打补丁 → 重启 → 验证，失败自动回滚）--"
+  printf '  面板有版本行 verNow          : %s  （期望 ≥1）\n' "$(printf '%s' "$PANEL" | grep -c 'id="verNow"')"
+  printf '  面板有「检查更新」入口       : %s  （期望 ≥1）\n' "$(printf '%s' "$PANEL" | grep -c 'checkDsh(')"
+  printf '  面板有更新弹窗 umodal        : %s  （期望 ≥1）\n' "$(printf '%s' "$PANEL" | grep -c 'id="umodal"')"
+  printf '  面板区分升/降（cmpVer）      : %s  （期望 ≥1）\n' "$(printf '%s' "$PANEL" | grep -c 'function cmpVer(')"
+  printf '  网关注册了 dshcheck          : %s  （期望 ≥2：定义 + 路由表）\n' "$(printf '%s' "$GW" | grep -c 'apiDshCheck')"
+  printf '  网关注册了 dshupgrade        : %s  （期望 ≥2：定义 + 路由表）\n' "$(printf '%s' "$GW" | grep -c 'apiDshUpgrade')"
+  printf '  升级失败会回滚               : %s  （期望 ≥2：定义 + 至少一处调用）\n' "$(printf '%s' "$GW" | grep -c 'rollback')"
+  printf '  补丁器已落位 patches.py      : %s  （期望 1）\n' "$([ -f "$PREFIX/share/dsh-ctl/patches.py" ] && echo 1 || echo 0)"
+  printf '  补丁器能被 python 解析       : %s  （期望 1）\n' "$(python3 -c 'import ast,sys; ast.parse(open(sys.argv[1],encoding="utf-8").read())' "$PREFIX/share/dsh-ctl/patches.py" 2>/dev/null && echo 1 || echo 0)"
+  printf '  flock 编译脚本已落位         : %s  （期望 1）\n' "$([ -f "$PREFIX/share/dsh-ctl/build-flock.sh" ] && echo 1 || echo 0)"
   echo
   echo "  -- 健康探测 API（拿 active 那把密钥真打一次它接口上的模型列表）--"
   HP=$(printf '%s' "$STJ" | python3 -c '

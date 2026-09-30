@@ -523,3 +523,152 @@ md5 对账还原、报 pid 有没有变。连跑三次：2303 / 2276 / 2275 ms�
 **对面板的含义（待用户决定，未改代码）**：「保存并重启」多出来的那次 restart，
 在本次没有新密钥值时对配置生效没有贡献（只是让浏览器重连）。面板上那句
 「有 N 把填了新密钥值 —— 那要回列表点『保存并重启』才写进服务环境」是对的，不能删。
+
+---
+
+## 8.8 控制台新增「dsh 版本更新」（2026-09-30）
+
+**起因**：用户「面板增加 dsh 版本更新功能」。
+
+### 为什么这不是「执行一条 npm i -g」那么简单
+
+`npm install -g @deepseek-ai/dsh` 会把整个包目录换成官方版，于是：
+
+- 打在 `node_modules` 源码上的 **14 处 Termux 补丁全部丢失**（见 §二）
+- 本地 `clang` 编出来的 `flock` 原生插件 `system.node` 也没了
+
+**只装包不补补丁，dsh-web 直接起不来**（回到 §1 那四类不兼容）。所以「更新版本」
+在 Termux 上是一条固定五步链，不是一步。
+
+### 实现（网关 `bin/dsh-ctl-gateway`）
+
+新增两个 `/ctl/api/*`：
+
+| 接口 | 性质 | 做什么 |
+|---|---|---|
+| `dshcheck` | **只读** | 读本地 `package.json` 拿当前版本 + 打 registry 小端点拿远端版本，给出 `hasUpdate` / 通道 / 补丁器是否在位 |
+| `dshupgrade` | 写 | 五步链 + 失败自动回滚 |
+
+五步链（`apiDshUpgrade`）：
+
+| 步 | 动作 | 失败后果 |
+|---|---|---|
+| 0 | `mv $PREFIX/lib/node_modules/@deepseek-ai` → `@deepseek-ai.bak-<ts>` | 中止（一个字节都没动） |
+| 1 | `npm install -g @deepseek-ai/dsh@<目标版本>`（超时 15 分钟） | 回滚 |
+| 2 | `python3 $PREFIX/share/dsh-ctl/patches.py`（幂等 + 锚点断言） | **回滚** |
+| 3 | `flock` 原生插件缺了就 `build-flock.sh` 现编 | 继续（只影响那条子系统） |
+| 4 | `sv restart dsh-web` + `dsh --version` 复验 | 回滚 |
+
+**回滚用改名不用复制**：包目录 300MB 级（实测 `du -sh` = 305M），`cp -a` 要几十秒，
+`mv` 是瞬时的（同文件系统改名）。失败时 `fs.rmSync` 删掉装坏的、`fs.renameSync`
+把备份改回来，再 `sv restart dsh-web`。
+
+**补丁器落位改动**：`install-ctl.sh` 现在多 put 两个文件到 `$PREFIX/share/dsh-ctl/`
+（跟 `panel.html` 同级）：
+
+- `patches.py` —— 升级后重打补丁用
+- `build-flock.sh` —— 原生插件丢失时现编用
+
+网关把这两个路径写死，**不依赖 `$HOME/dsh-termux/`**（历史遗留的临时目录，随时过期）。
+**补丁器不在就直接拒绝升级** —— 宁可不升，也不留一个起不来的 dsh。
+
+### 查版本：别用 `npm view`
+
+`npm view` 要起一个 npm 进程 + 拉整包文档。改打 registry 的**小端点**：
+
+```
+https://registry.npmjs.org/-/package/@deepseek-ai%2Fdsh/dist-tags
+→ {"alpha":"0.1.7-alpha.2","latest":"0.2.0-rc.2","next":"0.2.0-rc.2"}
+```
+
+几百字节，设备实测 **0.9 秒**（含 TLS 握手；第二次 0.37 秒）。官方源失败自动退
+`registry.npmmirror.com`。
+
+### 面板（`share/dsh-ctl/panel.html`）
+
+服务卡片里加版本行：`dsh <版本>` chip + `检查更新` + `更新到 x.y.z` + 状态短语。
+更新走确认弹窗：通道下拉（latest / next / alpha）、可手填任意版本、强制重装勾选、
+**升级前的步骤预告**、执行中的已等待秒数、**分步结果**（每步命令 + 退出码 + 输出）。
+
+页面加载后静默对一次远端（5 分钟内不重复，不覆盖输出面板），该亮时才亮。
+
+### 这一轮挖出来的四个真问题
+
+1. **「远端版本」不等于「更新」**。切到 alpha 通道时远端可能**比本机旧**
+   （实测本机 `0.1.7-rc.2`、alpha `0.1.7-alpha.2`）。按钮还写「更新到」是误导，
+   改成按 semver 粗比显示「**回退到**」。粗比必须算 prerelease 段
+   （`alpha.2` < `rc.2`），否则两者主版本相同会被判成"相等"。
+
+2. **结果一长，弹窗按钮被顶出视口**。升级结果 5 段加起来 781px，`.mbox` 只有 632px
+   （`max-height:88vh`），「关闭」落到 `y=770` —— 已在 720 高的视口**外**。
+   用户看到的是「按钮没了」。修：`.mfoot` 改 `position:sticky;bottom:0`，
+   `#uLog` 自己 `max-height:44vh;overflow:auto`。
+   断言同步改成测**位置**（`r.top >= 0 && r.bottom <= innerHeight`），
+   不再只测"元素存在"—— 与 §8.6 那条「断言只覆盖实现、没覆盖体验」同一类病。
+
+3. **拿按钮文字当状态位**。`closeUpdModal()` 原来靠 `ok.textContent === '执行中…'`
+   判断"正在跑"，而下拉完成时只把按钮 `display:none`、文字没换回来 →
+   **弹窗再也关不掉**。改用显式 `UPD.busy`。
+
+4. **`install/patches.py` 在仓库里是 CRLF、设备上是 LF**。内容一字不差（忽略行尾后
+   md5 一致），但直接下发到 Termux 是隐患。已转 LF 并加 `.gitattributes`
+   （`*.sh` / `*.py` / `*.js` / `*.html` / `bin/*` / `runit/*` 一律 `eol=lf`）。
+   `tests/inventory.out.txt` 同样处理。
+
+### 测试
+
+- `tests/audit-panel.js`：新增 17 条版本组断言（含「升降区分」「版本不再塞在 envline」）
+- `tests/test-panel-ui.js`：新增一段 24 项 —— 含**失败路径**（假后端版本号带 `fail` 就演一遍
+  「补丁锚点对不上 → 自动回滚」）与**成功路径**，共 **135 项全过**
+- `tests/preview-panel.js`：补 `dshcheck` / `dshupgrade` 两个假端点
+- 设备 `install-ctl.sh`：新增 10 条断言（面板有版本行 / 弹窗 / 网关两个接口 /
+  回滚存在 / 补丁器已落位且能被 python 解析 / flock 编译脚本已落位）
+
+### 真机实测：`dshcheck` 通，`dshupgrade` 卡在 `koffi`（2026-09-30）
+
+**`dshcheck`（真机，`http://192.168.3.190:8030/ctl/api/dshcheck`）**
+
+```json
+{"current":"0.1.7-rc.2","latest":"0.2.0-rc.2","hasUpdate":true,
+ "registry":"https://registry.npmjs.org","ms":859,"patcher":true,"flockOk":true}
+```
+
+耗时 909 ms；`channel=alpha` 返回 `latest:"0.1.7-alpha.2"`（正确触发「回退到」）；
+未登录 → `HTTP 401`。**这一半功能是真机验证过的。**
+
+**`dshupgrade`（真机，升 `0.2.0-rc.2`，耗时 283 秒）→ 失败，但回滚 100% 生效**
+
+`npm install -g @deepseek-ai/dsh@0.2.0-rc.2` 退出码 1：
+
+```
+npm error path    …/dsh/node_modules/koffi
+npm error command sh -c node ./cnoke.cjs -P . -D src/koffi --prebuild --release
+npm error Failed to load prebuilt binary, rebuilding from source
+npm error Error: CMake does not seem to be available
+```
+
+**根因**：`koffi`（0.2.0-rc.2 新增依赖）装的时候要跑 `cnoke.cjs`；Android/arm64 预编译
+二进制加载失败 → 回退源码编译 → 需要 **CMake**。设备实测：
+
+| 工具 | 状态 |
+|---|---|
+| `cmake` | **缺** |
+| `ninja` | **缺** |
+| `clang` / `make` / `gcc` / `pkg-config` | 在 |
+
+`0.1.7-rc.2` 里也有 `node_modules/koffi`，但那是当年用预编译二进制装上的，所以没暴露这个问题。
+
+**回滚验证（这才是重点）**：失败后设备**零损伤** ——
+
+| 项 | 升级前 | 升级后（回滚完） |
+|---|---|---|
+| dsh 版本 | `0.1.7-rc.2` | `0.1.7-rc.2` ✓ |
+| `cordis.patch.yml` | `34a4a29a…` | `34a4a29a…` ✓ |
+| `sites.json` | `192be465…` | `192be465…` ✓ |
+| flock `system.node` | 11776 B | 11776 B ✓ |
+| 8 条补丁 | 已打 | 已打 ✓ |
+| `@deepseek-ai.bak-*` | — | 已清理 ✓ |
+| `dsh-web` | run | run ✓ |
+
+**结论**：升级链路本身是好的，**卡点是新版本依赖 `koffi` 需要 CMake，而设备没装**。
+绕过方式（装 `cmake`+`ninja` 后重试 / 换源 / 等上游支持）属设备级变更，**待定**。

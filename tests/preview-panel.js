@@ -79,6 +79,11 @@ const STATE = {
     model: 'deepseek-ai/DeepSeek-V4-Flash-0731',
   },
   migrated: false,
+  dshFlavor: {
+    patcher: true,
+    flockOk: true,
+    share: '/data/data/com.termux/files/usr/share/dsh-ctl',
+  },
   credentials: [
     { name: 'DSH_DAHL_T1', value: KEY1, masked: 'dahl_7…fQNA' },
     { name: 'DSH_INTERN_T1', value: KEY2, masked: 'sk-7d8…ca14' },
@@ -147,6 +152,66 @@ http.createServer((req, res) => {
         ok: true, code: 200, ms: 240, models: ['gpt-4o-mini', 'claude-3-5-sonnet', 'deepseek-chat'],
         out: 'GET … → 200，3 个模型（假数据）',
       })
+    }
+    // 版本对表：真网关打 registry 的 dist-tags 小端点，这里直接把三个通道写死。
+    if (url.pathname === '/ctl/api/dshcheck') {
+      let b = {}
+      try { b = JSON.parse(Buffer.concat(body).toString() || '{}') } catch {}
+      const chan = b.channel || 'latest'
+      const tags = { latest: '0.2.0-rc.2', next: '0.2.0-rc.2', alpha: '0.1.7-alpha.2' }
+      const latest = tags[chan] || tags.latest
+      return setTimeout(() => j(res, {
+        ok: true,
+        current: STATE.dshVersion,
+        channel: chan,
+        latest,
+        tags,
+        hasUpdate: STATE.dshVersion !== latest,
+        registry: 'https://registry.npmjs.org',
+        ms: 183,
+        patcher: true,
+        flockOk: true,
+      }), 220)
+    }
+    // 升级：目标版本里带 "fail" 的，故意演一遍「补丁锚点对不上 → 自动回滚」。
+    // 这样面板的两条路（成功 / 回滚）都能在本地被测到，不用去动真机。
+    if (url.pathname === '/ctl/api/dshupgrade') {
+      let b = {}
+      try { b = JSON.parse(Buffer.concat(body).toString() || '{}') } catch {}
+      const want = String(b.version || '')
+      const from = STATE.dshVersion
+      const bakStep = { cmd: 'mv …/@deepseek-ai …/@deepseek-ai.bak-1780000000000', code: 0, out: '(改名备份 ' + from + ')' }
+      if (/fail/.test(want)) {
+        return setTimeout(() => j(res, {
+          ok: false,
+          rolledBack: true,
+          current: from,
+          out: '新版本的源码跟补丁对不上了（patches.py 退出码 1）。上游很可能改了被补丁的那几个文件，硬留着会起不来。\n\n已自动回滚。',
+          steps: [
+            bakStep,
+            { cmd: 'npm install -g @deepseek-ai/dsh@' + want, code: 0, out: 'added 1 package in 42s' },
+            { cmd: 'python3 patches.py', code: 1, out: '  失败 lib/bin.js —— 找不到锚点\n❌ 有 1 条补丁没打成' },
+            { cmd: '回滚到 ' + from, code: 0, out: '已把备份改回' },
+            { cmd: 'sv restart dsh-web', code: 0, out: 'run: dsh-web: (pid 8123) 0s' },
+          ],
+          state: STATE,
+        }), 320)
+      }
+      STATE.dshVersion = want
+      return setTimeout(() => j(res, {
+        ok: true,
+        from,
+        to: want,
+        out: '已从 ' + from + ' 升到 ' + want + '，补丁已重打，dsh-web 已重启。\nflock 原生插件：不需要（新包装完就带着可用的 .node）',
+        steps: [
+          bakStep,
+          { cmd: 'npm install -g @deepseek-ai/dsh@' + want, code: 0, out: 'added 1 package, changed 20 packages in 63s' },
+          { cmd: 'python3 patches.py', code: 0, out: '✅ 补丁完成：改动 8 处，跳过 0 处' },
+          { cmd: 'sv restart dsh-web', code: 0, out: 'run: dsh-web: (pid 4321) 0s' },
+          { cmd: 'dsh --version', code: 0, out: want },
+        ],
+        state: STATE,
+      }), 320)
     }
     if (url.pathname === '/ctl/api/manifest') {
       // 只改内存里的 STATE，模拟「清单落盘了」：刷新页面后加的那行还在。

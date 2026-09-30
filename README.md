@@ -40,8 +40,8 @@ dsh 本体是为 glibc Linux / macOS / Windows 构建的，在 Android 上会连
 | `runit/dsh-ctl-run` | `$SVDIR/dsh-ctl/run` | 服务 `dsh-ctl`：`<LAN-IP>:8030` |
 | `runit/dsh-lan-run` | `$SVDIR/dsh-lan/run` | 服务 `dsh-lan`：`<LAN-IP>:3080` |
 | `install/install.sh` | 推 `$TMPDIR` 执行 | 入口：打 JS 补丁 / 体检（`--check`） |
-| `install/patches.py` | 同上 | 幂等补丁器，14 处改动带 marker，npm 升级后重跑即可 |
-| `install/build-flock.sh` | 同上 | `clang -shared` 直编 `system.node`，**绕开 node-gyp**（它在 Termux 上编不出来） |
+| `install/patches.py` | 推 `$TMPDIR` 执行；**同时**落 `$PREFIX/share/dsh-ctl/` | 幂等补丁器，14 处改动带 marker，npm 升级后重跑即可 |
+| `install/build-flock.sh` | 推 `$TMPDIR` 执行；**同时**落 `$PREFIX/share/dsh-ctl/` | `clang -shared` 直编 `system.node`，**绕开 node-gyp**（它在 Termux 上编不出来） |
 | `install/install-web-service.sh` | 同上 | 装 `dsh-web` runit 服务 |
 | `install/install-lan.head.sh` + `build-install-lan.py` | → 生成 `install-lan.sh` | 装 `dsh-lan` 裸转发 |
 | `install/install-ctl.head.sh` + `build-install-ctl.py` | → 生成 `install-ctl.sh` | 装 8030 网关 + 控制台（幂等，含 200+ 行断言） |
@@ -91,7 +91,7 @@ node tests/audit-panel.js share/dsh-ctl/panel.html       # 期望 ✗ = 0
 node tests/preview-panel.js            # http://127.0.0.1:8877
 
 # 真浏览器交互断言（headless chromium 驱动假后端）
-node tests/test-panel-ui.js            # 期望「通过 108 项，失败 0 项」
+node tests/test-panel-ui.js            # 期望「失败 0 项」（当前 135 项）
 
 # 设备上：验证「改配置是否需要重启」
 bash $PREFIX/bin/verify-hot-reload.sh
@@ -103,7 +103,7 @@ bash $PREFIX/bin/verify-hot-reload.sh
 
 ---
 
-## 两条最容易踩的实测结论
+## 三条最容易踩的实测结论
 
 ### 1. 「保存并重启」里的重启对配置多余、对密钥必需
 
@@ -133,6 +133,34 @@ curl -s -b cookie.jar -X POST -H 'Content-Type: application/json' \
 
 所以「进程 watch 的 ino == 文件 ino」这种判据会假否 —— chokidar 靠目录事件重新注册。
 **用行为判定，别用 inode。**
+
+### 3. 更新 dsh = 装包 **加** 重打补丁，少一步服务就起不来
+
+控制台右上角「服务与运行环境」卡片里有版本行：`检查更新` 只读，`更新到 x.y.z` 才是写操作。
+
+关键事实：**`npm install -g @deepseek-ai/dsh` 会把整个包目录换成官方版** —— 那 14 处 Termux 补丁
+（打在 `node_modules` 里的源码上）全部丢失，本地编译的 `flock` 原生插件 `system.node` 也没了。
+只装包不补补丁，服务直接起不来。所以升级是一条固定的五步链：
+
+| 步 | 做什么 | 失败会怎样 |
+|---|---|---|
+| 0 | **改名备份**整个 `@deepseek-ai` 作用域目录 | — |
+| 1 | `npm install -g @deepseek-ai/dsh@<目标版本>` | 回滚 |
+| 2 | `python3 $PREFIX/share/dsh-ctl/patches.py`（幂等，带锚点断言） | 回滚 |
+| 3 | `flock` 原生插件缺了就 `build-flock.sh` 现编 | 继续（只影响那条子系统） |
+| 4 | `sv restart dsh-web` + `dsh --version` 复验 | 回滚 |
+
+**上游改了被补丁的文件 → 补丁器的锚点断言会失败（退出码 1）→ 自动回滚**。这是刻意设计：
+宁可不升，也不留一个起不来的 dsh。
+
+**回滚用 `mv` 不用 `cp`**：包目录 300MB 级，`cp -a` 要几十秒，`mv` 是瞬时的（同文件系统改名）。
+先把旧的改名挪走、装新的，失败就把新的删掉、旧的改回来。
+
+**查版本不走 `npm view`**，直接打 registry 的**小端点** `/-/package/@deepseek-ai%2Fdsh/dist-tags`
+（几百字节，实测 0.9 秒；整包文档是几百 KB）。官方源失败自动退 `registry.npmmirror.com`。
+
+**「远端版本」不等于「更新」**：切到 `alpha` 通道时远端可能**比本机旧**（实测本机 `0.2.0-rc.2`、
+alpha 是 `0.1.7-alpha.2`）。面板会按 semver 粗比把按钮改成「**回退到** …」，别一律写「更新」。
 
 ---
 
