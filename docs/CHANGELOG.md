@@ -961,3 +961,29 @@ API>=30 两个条件，少一条 `statx` 就只剩类型没有函数，clang 报
   （路径守卫 / 精确名单 / 幂等）原样复用
 - 老入口 `install-ctl.sh` / `install-lan.sh` / `install.sh` 保留不动；`install-gateway.sh`
   是面向「新设备 / 想全网页操作」的入口，不是替换
+
+---
+
+## 十一、一键 curl 入口（`bootstrap.sh`，2026-09-30 新增）
+
+仓库推到 GitHub 后，`install-gateway.sh` 是 gitignore 的生成物，raw 上拿不到。
+`bootstrap.sh`（仓库根）补上这一环 —— Termux 里一行：
+
+    curl -fsSL https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | bash
+
+从 raw 拉 16 个源文件到 `$TMPDIR` → 本地现构建 → 执行。依赖只有 curl + python3
+（nodejs / termux-services 由安装器自己检查提示）。两个设计点：
+
+- **下载 URL 带同一时间戳**：raw 的 CDN 按文件缓存且不同步 —— 不带戳可能拿到
+  「A 文件新版、B 文件旧版」的混合快照，构建照过但行为是旧的。带同一 `?ts` 强制
+  全部回源，锁死同一时刻。真机实测：无戳拿到旧版 `dsh-ctl-gateway`（63866 B），
+  带戳立刻是新版（81731 B）。`bash -s <ref>` 可指定分支 / tag / commit。
+- **生成物继续不入库**：bootstrap 拉的是源，当场构建，源与产物不可能不同步。
+  失败时提示 `git clone` 备选（raw 被墙的场景）。本地可用 `DSH_RAW` 覆盖下载源
+  自测（仓库根起 `python3 -m http.server`，`DSH_BUILD_ONLY=1` 只构建不执行）。
+
+顺带修了一个线上事故的尾巴：16:00 控制台点的「卸载」是 detached 跑的（删 300MB
+的 dsh 包很慢），与 16:04 的 repair 重建发生竞争 —— 重建好的 `dsh-web` 服务被慢吞吞
+的卸载又删了一遍，导致 8030 的 `/app` 一度 502。 detached 卸载结束后重跑
+`install-web-service.sh` 即恢复。这是 job/卸载纯内存态的同一类脆弱性（见下一步：
+job 落盘）。
