@@ -3,347 +3,293 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>dsh 网关控制台</title>
+<title>dsh 网关</title>
 <style>
 :root{--bg:#0f1115;--panel:#161a20;--panel2:#1c222b;--panel3:#12171e;--bd:#2a313c;--fg:#e6e9ef;--dim:#8b95a5;--acc:#4c8dff;--ok:#37c871;--warn:#f5a623;--err:#ef4d4d}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif}
 a{color:var(--acc);text-decoration:none}
-.wrap{max-width:1180px;margin:0 auto;padding:22px 16px 70px}
-h1{font-size:20px;margin:0 0 4px}
-.sub{color:var(--dim);font-size:12.5px;margin-bottom:18px}
-.card{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px 18px;margin-bottom:14px}
-.card h2{font-size:12.5px;margin:0 0 12px;color:var(--dim);font-weight:600;letter-spacing:.06em;text-transform:uppercase}
-.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
-@media(max-width:820px){.g2,.g3{grid-template-columns:1fr}}
-label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
-input,select,textarea{width:100%;background:var(--panel2);border:1px solid var(--bd);color:var(--fg);border-radius:8px;padding:8px 10px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
-input[type=checkbox],input[type=radio]{width:auto}
-button{background:var(--panel2);border:1px solid var(--bd);color:var(--fg);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer}
+.wrap{max-width:820px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:21px;margin:0 0 2px}
+.sub{color:var(--dim);font-size:13px;margin-bottom:16px}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:18px;margin-bottom:16px}
+.card h2{font-size:13px;margin:0 0 14px;color:var(--dim);font-weight:600;letter-spacing:.06em}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+@media(max-width:640px){.g2,.g3{grid-template-columns:1fr}}
+label{display:block;font-size:12.5px;color:var(--dim);margin-bottom:5px}
+input,select,textarea{width:100%;background:var(--panel2);border:1px solid var(--bd);color:var(--fg);border-radius:10px;padding:11px 12px;font:14px/1.5 ui-monospace,Menlo,Consolas,monospace}
+input[type=checkbox]{width:auto}
+button{background:var(--panel2);border:1px solid var(--bd);color:var(--fg);border-radius:10px;
+  padding:11px 18px;font-size:14px;cursor:pointer;min-height:44px}
 button:hover{border-color:var(--acc)}
 button:disabled{opacity:.45;cursor:not-allowed}
 button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
 button.danger{border-color:#5a2a2a;color:#ff9c9c}
-button.mini{padding:4px 10px;font-size:12px;border-radius:6px}
-.chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--bd);border-radius:999px;padding:4px 11px;font-size:12px}
+button.mini{padding:7px 12px;font-size:13px;border-radius:8px;min-height:36px}
+button.block{width:100%}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--bd);border-radius:999px;padding:6px 12px;font-size:12.5px}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none;display:inline-block}
 .dot.ok{background:var(--ok);box-shadow:0 0 6px rgba(55,200,113,.6)}
 .dot.no{background:var(--err);box-shadow:0 0 6px rgba(239,77,77,.6)}
 .dot.warn{background:var(--warn)}
 kbd{background:var(--panel2);border:1px solid var(--bd);border-radius:6px;padding:2px 7px;font:12px ui-monospace,monospace}
-pre{background:#0b0d11;border:1px solid var(--bd);border-radius:8px;padding:12px;overflow:auto;max-height:360px;font:12px/1.55 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;margin:0}
-.muted{color:var(--dim);font-size:12.5px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-td,th{text-align:left;padding:6px 8px;border-bottom:1px solid #222831;vertical-align:middle}
-th{color:var(--dim);font-weight:500;font-size:12px}
-.hint{font-size:12px;color:var(--dim);margin-top:6px}
+pre{background:#0b0d11;border:1px solid var(--bd);border-radius:10px;padding:12px;overflow:auto;max-height:320px;font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;margin:0}
+.muted{color:var(--dim);font-size:13px}
+.hint{font-size:12.5px;color:var(--dim);margin-top:8px}
+.badge{display:inline-block;border:1px solid var(--bd);border-radius:6px;padding:1px 7px;font-size:11.5px;color:var(--dim)}
+.badge.on{border-color:#2b4a80;color:var(--acc)}
+.badge.ok{border-color:#1f4d33;color:var(--ok)}
+.badge.no{border-color:#5a2a2a;color:#ff9c9c}
+.badge.warn{border-color:#5a4a20;color:var(--warn)}
 
-/* ---------------- 接口列表：一行一个接口地址；展开才是它下面的密钥列表 ---------------- */
+/* ---- 当前生效 ---- */
+.curbig{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}
+.curbig .who{min-width:0}
+.curbig .site{font-size:17px;font-weight:700}
+.curbig .url{font:13px ui-monospace,Menlo,Consolas,monospace;color:var(--dim);word-break:break-all;margin-top:2px}
+.curbig .keyline{margin-top:8px;font-size:14px}
+.curbig .keyline b{font:14px ui-monospace,Menlo,Consolas,monospace}
+.curbig .acts{display:flex;gap:10px;flex-wrap:wrap}
 
-/* 接口行 / 密钥行都用 grid；宽屏对齐，窄屏自动换行 */
-.arow,.ahead{display:grid;grid-template-columns:26px minmax(140px,1.4fr) minmax(100px,1fr) 112px 112px 84px 128px;
-  gap:10px;align-items:center}
-.ahead{padding:0 6px 6px;color:var(--dim);font-size:11.5px;letter-spacing:.04em;border-bottom:1px solid var(--bd);margin-bottom:2px}
-.arow{padding:10px 6px;border-bottom:1px solid #1d232b;cursor:pointer}
+/* ---- 接口列表 ---- */
+.arow{padding:13px 4px;border-bottom:1px solid #1d232b;cursor:pointer}
 .arow:hover{background:#12171e}
-.arow .a-url{font:12.5px ui-monospace,Menlo,Consolas,monospace;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.arow .a-nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.arow .a-proto,.arow .a-cnt{font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.arow .c-hl{font-size:12px;text-align:right;white-space:nowrap}
-.arow .a-act{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}
-
-/* 密钥行：一行一把，没有展开 —— 该把密钥的配置走行尾「编辑」弹窗，删就在行尾 */
-.krow,.khead{display:grid;grid-template-columns:38px 16px minmax(90px,150px) minmax(90px,1fr) 78px 124px;
-  gap:10px;align-items:center}
-.khead{padding:0 6px 5px;color:var(--dim);font-size:11px;letter-spacing:.04em;border-bottom:1px solid #222831}
-.krow{padding:8px 6px;border-bottom:1px solid #1d232b}
-.krow:hover{background:#12171e}
-.krow.off{opacity:.5}
-.krow .c-nm{font:13px ui-monospace,Menlo,Consolas,monospace;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.krow .c-nt{font-size:12.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.krow .c-hl{font-size:12px;text-align:right;white-space:nowrap}
-.krow .c-act{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}
-@media(max-width:820px){
-  .ahead,.khead{display:none}
-  .arow{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
-  .arow .a-url{flex:1 1 100%;white-space:normal;word-break:break-all}
-  .arow .a-nm{flex:1 1 auto;min-width:0}
-  .arow .c-hl{margin-left:auto}
-  .arow .a-act{flex:1 1 100%;justify-content:flex-start}
-  .krow{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center}
-  .krow .c-nm{flex:1 1 110px;min-width:0}
-  .krow .c-hl{margin-left:auto}
-  .krow .c-nt{flex:1 1 100%;white-space:normal;word-break:break-all}
-  .krow .c-act{flex:1 1 100%;justify-content:flex-start}
-  .klist{margin-left:6px}
-}
-.c-hl.ok{color:var(--ok)}.c-hl.no{color:var(--err)}.c-hl.warn{color:var(--warn)}.c-hl.idle{color:var(--dim)}
-.chev{background:none;border:0;color:var(--dim);padding:0;font-size:11px;cursor:pointer;width:22px}
+.arow .top{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center}
+.arow .a-nm{font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.arow .a-url{font:12.5px ui-monospace,Menlo,Consolas,monospace;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;flex:1 1 200px}
+.arow .a-act{margin-left:auto;display:flex;gap:8px}
+.chev{background:none;border:0;color:var(--dim);padding:6px 8px;font-size:13px;cursor:pointer;min-height:36px}
 .chev:hover{color:var(--fg)}
-.cur{font-size:10.5px;color:var(--acc);border:1px solid #2b4a80;border-radius:4px;padding:0 4px;margin-left:6px}
-
-/* 接口展开区：缩进一层（左侧竖线）的密钥列表 */
-.adet{padding:8px 0 6px}
-.klist{margin:0 0 4px 34px;border-left:2px solid #232b36;padding-left:12px}
-.kadd{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px}
-.kadd button{border-style:dashed;color:var(--acc);background:transparent}
-.kadd button:hover{background:#131a24}
-.addapi{margin-top:10px}
-.addapi button{width:100%;border-style:dashed;color:var(--acc);background:transparent;padding:11px 14px}
-.addapi button:hover{background:#131a24}
-
-/* 弹窗：新增 / 编辑接口 */
-.modal{position:fixed;inset:0;background:rgba(4,6,10,.72);display:flex;align-items:center;justify-content:center;padding:18px;z-index:50}
-.mbox{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:18px;width:100%;max-width:760px;max-height:88vh;overflow:auto;box-shadow:0 18px 60px rgba(0,0,0,.55)}
-.mbox .g2,.mbox .g3{margin-bottom:10px}
-.mhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
-.mhead h3{font-size:15px;margin:0}
-/* 弹窗里的按钮必须永远点得到。更新结果能拉到几百像素高，footer 会被挤出可视区 ——
-   用户看到的是「按钮没了」，以为是卡住了。（实测：内容 781px、容器 632px 时「关闭」落到
-   y=770，已在 720 高的视口外。）sticky 贴住滚动容器底部，顺带把接口 / 密钥弹窗也一起兜住。 */
-.mfoot{display:flex;justify-content:flex-end;gap:8px;margin:14px 0 0;
-  position:sticky;bottom:0;background:var(--panel);padding:10px 0 2px;border-top:1px solid var(--bd)}
-/* 弹窗内的校验报错。以前出错只写页面底部的「输出」卡片，被弹窗遮着 —— 用户点了
-   「创建接口」看不到任何反应，以为是按钮坏了。所以错误原因必须显示在这里。 */
-.merr{background:rgba(255,96,96,.10);border:1px solid #6d2c2c;color:#ff9d9d;
-  border-radius:8px;padding:9px 11px;margin:0 0 12px;font-size:12.5px;line-height:1.5}
-/* 启停开关 */
-.sw{position:relative;width:36px;height:20px;display:inline-block;cursor:pointer;flex:none}
+.klist{margin:2px 0 6px 32px;border-left:2px solid #232b36;padding-left:12px}
+.krow{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;padding:11px 4px;border-bottom:1px solid #1b2129}
+.krow:last-child{border-bottom:0}
+.krow.off{opacity:.55}
+.krow .k-main{min-width:0;flex:1 1 220px}
+.krow .k-nm{font:14px ui-monospace,Menlo,Consolas,monospace;font-weight:600}
+.krow .k-sub{font-size:12.5px;color:var(--dim);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.krow .k-act{margin-left:auto;display:flex;gap:8px}
+.sw{position:relative;width:44px;height:26px;display:inline-block;cursor:pointer;flex:none}
 .sw input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;z-index:2}
-.sw i{display:block;width:36px;height:20px;border-radius:999px;background:#2a313c;transition:.15s;position:relative}
-.sw i:after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#8b95a5;transition:.15s}
+.sw i{display:block;width:44px;height:26px;border-radius:999px;background:#2a313c;transition:.15s;position:relative}
+.sw i:after{content:'';position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#8b95a5;transition:.15s}
 .sw input:checked + i{background:#1f4d33}
-.sw input:checked + i:after{left:18px;background:var(--ok)}
-/* 弹窗里的一把密钥：详情全平铺，没有二级展开 */
-.mkey{background:var(--panel3);border:1px solid var(--bd);border-radius:9px;padding:12px;margin:0 0 10px}
-.mkey .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
-.mkey.off{border-color:#232a34}
-.badge{font-size:11px;border-radius:5px;padding:2px 7px;border:1px solid var(--bd);color:var(--dim);white-space:nowrap}
-.badge.on{color:var(--acc);border-color:#2b4a80}
-.badge.ok{color:var(--ok);border-color:#255c39}
-.badge.no{color:var(--err);border-color:#5a2a2a}
-.badge.warn{color:var(--warn);border-color:#5c4a25}
-.rid{font:12px ui-monospace,monospace;color:var(--dim);background:var(--panel2);border:1px solid var(--bd);border-radius:6px;padding:2px 8px}
-.tags{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;max-height:176px;overflow:auto}
-.tag{display:inline-flex;align-items:center;gap:6px;background:#131820;border:1px solid var(--bd);border-radius:7px;padding:3px 8px;font:12px ui-monospace,monospace;max-width:100%;white-space:nowrap}
-.tag b{font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:330px}
-.tag button{background:none;border:0;color:var(--dim);padding:0 2px;font-size:14px;line-height:1;cursor:pointer}
-.tag button:hover{color:var(--err)}
-.cand{background:#0d1117;border:1px solid var(--bd);border-radius:8px;padding:10px;margin-top:8px;max-height:220px;overflow:auto}
-.cand label{display:flex;align-items:center;gap:8px;color:var(--fg);font:12px ui-monospace,monospace;margin:0;padding:3px 0;cursor:pointer}
-.sk{margin-top:10px}
-.subhead{font-size:11.5px;color:var(--dim);font-weight:600;letter-spacing:.08em;text-transform:uppercase;margin:12px 0 8px}
-#out{white-space:pre-wrap}
+.sw input:checked + i:after{left:21px;background:var(--ok)}
+.addapi{margin-top:12px}
+.addapi button{width:100%;border-style:dashed;color:var(--acc);background:transparent;padding:14px}
+.addapi button:hover{background:#131a24}
+.savebar{margin-top:14px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.savebar .primary{flex:1 1 220px}
+.savebar label{margin:0;display:flex;gap:6px;align-items:center;font-size:13px}
 
-/* ---------------- 版本行：当前版本 / 远端版本 / 更新入口 ---------------- */
-.chip .no-up{color:var(--ok)}
-.chip .has-up{color:var(--warn);font-weight:600}
-.chip.new{border-color:#5c4a1f;background:#1e1a10}
-.vmsg{font-size:12px;color:var(--dim)}
-/* 更新弹窗里的分步结果：每一步一行，命令 + 退出码 + 输出 */
-.ustep{border:1px solid var(--bd);border-radius:8px;padding:9px 11px;margin:0 0 8px;background:var(--panel3)}
-.ustep .ucmd{font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--acc);word-break:break-all}
-.ustep .ucode{font-size:11.5px;color:var(--dim);margin-left:8px}
-.ustep pre{margin:7px 0 0;max-height:170px;background:#0b0d11}
-/* 分步结果自己滚，别把整个弹窗顶长 */
-#uLog{max-height:44vh;overflow:auto}
-.ustep.bad{border-color:#5a2a2a}
-.ustep.good{border-color:#25543a}
-.ustep.run{border-color:#2b4a80}
-.ustep.run .ucode{color:var(--acc)}
-.uwait{font-size:12.5px;color:var(--warn);margin:0 0 8px}
+/* ---- 弹窗 ---- */
+.modal{position:fixed;inset:0;background:rgba(4,6,10,.72);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50}
+.mbox{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:20px;width:100%;max-width:720px;max-height:88vh;overflow:auto;box-shadow:0 18px 60px rgba(0,0,0,.55)}
+.mbox .g2,.mbox .g3{margin-bottom:12px}
+.mhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+.mhead h3{font-size:16px;margin:0}
+/* 弹窗按钮 sticky 贴底：更新结果能拉几百像素高，不贴住「关闭」会被挤出可视区 */
+.mfoot{display:flex;justify-content:flex-end;gap:10px;margin:14px 0 0;position:sticky;bottom:0;background:var(--panel);padding:10px 0 2px;border-top:1px solid var(--bd)}
+.merr{background:rgba(255,96,96,.10);border:1px solid #6d2c2c;color:#ff9d9d;border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:13px;line-height:1.5}
+.mkey{background:var(--panel3);border:1px solid var(--bd);border-radius:10px;padding:14px}
+.mkey .bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px}
+.mkey .rid{font:14px ui-monospace,Menlo,Consolas,monospace;font-weight:700}
+.sk{margin-top:14px}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.tag{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--bd);border-radius:8px;padding:5px 10px;font-size:12.5px}
+.tag b{font:12.5px ui-monospace,monospace}
+.tag button{background:none;border:0;color:var(--dim);padding:0 4px;font-size:14px;min-height:0;cursor:pointer}
+.tag button:hover{color:var(--err)}
+.cand{margin-top:10px;border-top:1px dashed var(--bd);padding-top:10px}
+.cand label{display:inline-flex;align-items:center;gap:6px;margin:4px 10px 0 0;font-size:12.5px;color:var(--fg)}
+.ustep{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin:10px 0;background:var(--panel3)}
+.ustep.good{border-color:#1f4d33}.ustep.bad{border-color:#5a2a2a}
+.ucmd{font:13px ui-monospace,monospace;display:block}
+.ucode{font-size:12px;color:var(--dim);display:block;margin-top:2px}
+.ustep pre{margin-top:8px;max-height:160px}
+details.adv{margin-top:12px;border-top:1px dashed var(--bd);padding-top:12px}
+details.adv > summary{cursor:pointer;color:var(--dim);font-size:13px;padding:6px 0;min-height:36px;display:flex;align-items:center}
+details.adv > summary:hover{color:var(--fg)}
+.vrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.vmsg{font-size:12.5px;color:var(--dim)}
+.has-up{color:var(--ok)}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:16px">
-    <div>
-      <h1>dsh 网关控制台</h1>
-      <div class="sub" id="sub" style="margin:0">加载中…</div>
-    </div>
-    <a href="/app"><button class="primary">进入 dsh 主界面 →</button></a>
-  </div>
+  <h1>dsh 网关</h1>
+  <div class="sub" id="sub">加载中…</div>
 
-  <!-- dsh 未装时的安装向导；装好（state.dshMissing:false）就自动隐藏，改走服务卡上的常规入口 -->
   <div class="card" id="wizard" style="display:none">
-    <h2>安装 dsh（向导）</h2>
-    <p class="muted">dsh 本体还没装。选个通道或手填版本，点一下就在后台装（npm 装包 → 重打 Termux 补丁 → 起 dsh-web），进度在弹窗里实时滚，不用 SSH。</p>
-    <div class="g3">
+    <h2>安装 dsh</h2>
+    <div class="g2">
       <div><label>通道</label>
         <select id="wChan" onchange="wChanChange()">
-          <option value="latest">latest（稳定）</option>
-          <option value="next">next</option>
-          <option value="alpha">alpha</option>
+          <option value="latest">latest（正式版）</option>
+          <option value="next">next（预发布）</option>
+          <option value="alpha">alpha（最早的预览）</option>
         </select></div>
-      <div><label>版本（可手填 registry 上的任意版本，留空按通道取）</label>
+      <div><label>版本（留空 = 按通道取最新）</label>
         <input id="wVer" placeholder="例如 0.2.0-rc.2" onchange="wVerEdited()"></div>
-      <div><label>&nbsp;</label>
-        <button class="primary" id="wGo" onclick="doInstall()">开始安装</button></div>
     </div>
-    <p class="hint">装完弹窗里会给令牌登录链接，点开直接进 dsh 主界面。选 alpha 通道时远端可能比本机旧 —— 那是回退路，不是更新。</p>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="wGo" onclick="doInstall()">开始安装</button>
+    </div>
+    <p class="hint">装的是 <b>@deepseek-ai/dsh</b>（npm 全局包）。进度在弹窗里实时滚，装完页面会自动刷新出控制台。</p>
   </div>
 
-  <div class="card">
-    <h2>服务与运行环境</h2>
-    <div class="row" id="services"></div>
-    <div class="row" style="margin:10px 0 0">
-      <span class="chip" id="verNow" title="当前装着的 dsh 版本"><span class="dot" id="verDot"></span>dsh <b id="verTxt">…</b></span>
-      <span class="chip new" id="verNew" style="display:none"></span>
-      <button class="mini" id="btnChk" onclick="checkDsh(false)" title="去 npm registry 查最新版。只读操作，不动设备">检查更新</button>
-      <button class="mini primary" id="btnUpd" style="display:none" onclick="openUpdModal()">更新</button>
-      <span class="vmsg" id="verMsg"></span>
+  <!-- 当前生效 -->
+  <div class="card" id="curCard" style="display:none">
+    <h2>当前生效</h2>
+    <div class="curbig">
+      <div class="who">
+        <div class="site" id="curSite">—</div>
+        <div class="url" id="curUrl"></div>
+        <div class="keyline" id="curKey"></div>
+      </div>
+      <div class="acts">
+        <a href="/app"><button class="primary">打开 dsh 主界面 →</button></a>
+        <button id="curEdit" onclick="curEditKey()">编辑这把密钥</button>
+      </div>
     </div>
-    <p class="muted" style="margin:6px 0 0" id="envline"></p>
-
-    <p class="row" style="margin:12px 0 0">
-      <button onclick="load()">刷新</button>
-      <button onclick="act('restart')">重启 dsh-web</button>
-      <button onclick="act('verify')">端到端自检（真跑一次）</button>
-      <button class="mini" id="btnRepair" style="display:none" onclick="doRepair()"
-        title="补丁被冲掉 / 服务起不来时用：重打 Termux 补丁 + 起 dsh-web，不换包、不走 npm">修复（重打补丁）</button>
-      <button class="mini danger" id="btnUninstall" style="display:none" onclick="doUninstall()"
-        title="卸载整个方案：服务 / 工具 / 面板（+ dsh npm 包）。网关自己也是被删的对象，页面会断连">卸载</button>
-      <label class="mini" id="unAllWrap" style="display:none;cursor:pointer" title="勾上等于 uninstall.sh --all：连 ~/.dsh 会话 / 接口 / 密钥一起删">
-        <input type="checkbox" id="unAll" style="width:auto"> 连用户数据一起删
-      </label>
-      <button onclick="showLog('dsh-web')">看 dsh-web 日志</button>
-      <button onclick="showLog('dsh-ctl')">看本网关日志</button>
-    </p>
   </div>
 
+  <!-- 接口与密钥 -->
   <div class="card">
-    <h2>接口列表</h2>
-
-    <div class="ahead">
-      <span></span><span>接口地址</span><span>名称</span><span>协议</span><span>密钥</span><span style="text-align:right">健康</span><span style="text-align:right">操作</span>
-    </div>
+    <h2>接口与密钥</h2>
     <div id="list"></div>
     <div class="addapi">
-      <button id="btnAddApi" onclick="openApiModal()" title="弹窗里填接口地址 + 协议（也可以顺手填第一把密钥）；密钥逐把在展开列表里管理">＋ 新增接口</button>
+      <button id="btnAddApi" onclick="openApiModal()">＋ 新增接口</button>
     </div>
-
-    <p class="row" style="margin:16px 0 0">
-      <button class="primary" onclick="save(true,false)">保存并重启</button>
-      <button onclick="save(false,false)">只写配置（不重启）</button>
-      <button onclick="save(true,true)">保存 + 重启 + 自检</button>
-      <button class="danger" onclick="clearAll()">回到官方默认</button>
-    </p>
+    <div class="savebar">
+      <button class="primary" onclick="save(true, el('svVerify').checked)">保存并生效</button>
+      <label><input type="checkbox" id="svVerify"> 保存后自检</label>
+    </div>
     <p class="hint" id="savehint"></p>
   </div>
 
+  <!-- 维护 -->
   <div class="card">
-    <h2>输出</h2>
-    <pre id="out">就绪。</pre>
+    <h2>维护</h2>
+    <div class="row">
+      <button class="primary" onclick="openUpdModal()">更新 dsh</button>
+      <button class="danger" id="btnUninstall" style="display:none" onclick="doUninstall()">卸载</button>
+      <label id="unAllWrap" style="display:none;align-items:center;gap:6px;font-size:13px;color:var(--dim);cursor:pointer"
+             title="勾上等于 uninstall.sh --all：连 ~/.dsh 会话 / 接口 / 密钥一起删">
+        <input type="checkbox" id="unAll" style="width:auto"> 连用户数据一起删
+      </label>
+    </div>
+
+    <details class="adv">
+      <summary>高级：版本 / 服务 / 修复 / 日志 / 输出</summary>
+      <div class="vrow" style="margin-top:10px">
+        <span class="chip" id="verNow" title="当前 dsh 版本"><span class="dot" id="verDot"></span>dsh <b id="verTxt">…</b></span>
+        <span class="chip" id="verNew" style="display:none"></span>
+        <button class="mini" id="btnChk" onclick="checkDsh(false)">检查更新</button>
+        <button class="mini primary" id="btnUpd" style="display:none" onclick="openUpdModal()">更新</button>
+        <button class="mini danger" id="btnRepair" style="display:none" onclick="doRepair()"
+                title="不换包、不走 npm：只重打 Termux 补丁 + 起服务。服务卡住时先试这个">修复（重打补丁）</button>
+      </div>
+      <div class="vmsg" id="verMsg"></div>
+
+      <div class="row" style="margin:12px 0">
+        <button class="mini" onclick="load()">刷新状态</button>
+        <button class="mini" onclick="showLog('dsh-ctl')">网关日志</button>
+        <button class="mini" onclick="showLog('dsh-web')">dsh-web 日志</button>
+      </div>
+      <div class="row" id="services" style="margin-bottom:8px"></div>
+      <p class="muted" style="margin:0" id="envline"></p>
+
+      <details class="adv" style="margin-top:14px">
+        <summary>输出</summary>
+        <pre id="out">就绪。</pre>
+      </details>
+    </details>
   </div>
 </div>
 
-<!-- 新增 / 编辑接口：一律走弹窗，列表里不放常驻表单 -->
-<div id="modal" class="modal" style="display:none" onclick="if(event.target===this)closeModal()"
-     oninput="modalErr('')" onchange="modalErr('')">
+<!-- 接口弹窗 -->
+<div id="modal" class="modal" style="display:none" onclick="if(event.target===this)closeModal()">
   <div class="mbox">
     <div class="mhead">
-      <div>
-        <h3 id="mTitle">新增接口</h3>
-        <p class="muted" id="mHint" style="margin:3px 0 0"></p>
-      </div>
+      <div><h3 id="mTitle">新增接口</h3><p class="muted" id="mHint" style="margin:3px 0 0"></p></div>
       <button class="mini" onclick="closeModal()" title="关闭">✕</button>
     </div>
-
     <p class="merr" id="mErr" style="display:none"></p>
-
     <div class="g2">
-      <div><label>从预设开始（选完自动填 id / 名字 / 协议 / 接口地址）</label>
+      <div><label>常用预设（选一个自动填下面）</label>
         <select id="nsTpl" onchange="nsApplyPreset()"></select></div>
-      <div><label>接口 id（小写字母 / 数字 / 连字符，建好不能改）</label>
-        <input id="nsId" placeholder="例如 intern" oninput="nsSyncKeyVar()"></div>
+      <div><label>接口 id（小写字母开头，建好不能改）</label>
+        <input id="nsId" placeholder="例如 intern" oninput="nsSyncKeyVar();modalErr('')"></div>
     </div>
-    <div class="g3">
-      <div><label>显示名</label><input id="nsName" placeholder="例如 intern-ai 聚合"></div>
+    <div class="g2">
+      <div><label>显示名</label><input id="nsName" oninput="modalErr('')" placeholder="例如 intern-ai 聚合"></div>
       <div><label>协议</label><select id="nsApi">
-        <option value="openai-completions">openai-completions</option>
-        <option value="anthropic-messages">anthropic-messages</option>
+        <option value="openai-completions">openai-completions（OpenAI 兼容）</option>
+        <option value="anthropic-messages">anthropic-messages（Claude）</option>
       </select></div>
-      <div><label>接口地址</label><input id="nsUrl" placeholder="https://… 或 http://127.0.0.1:3001/v1"></div>
     </div>
-
+    <div><label>接口地址</label><input id="nsUrl" oninput="modalErr('')" placeholder="https://… 或 http://127.0.0.1:3001/v1"></div>
     <div id="mFirstKey">
-      <div class="subhead">第一把密钥（可以整组留空，建完在接口展开区里也能加）</div>
-      <div class="g3">
-        <div><label>备注</label><input id="nsNote" placeholder="例如 主号 / 邮箱"></div>
-        <div><label>密钥值（可以先留空）</label>
-          <input id="nsKey" type="password" autocomplete="new-password" placeholder="sk-… / dahl_…"></div>
-        <div><label>环境变量名</label><input id="nsKeyVar" placeholder="建好后自动生成"></div>
+      <div class="g2" style="margin-top:12px">
+        <div><label>备注（这把密钥叫什么）</label><input id="nsNote" oninput="modalErr('')" placeholder="例如 主号 / 邮箱"></div>
+        <div><label>密钥值（可以先不填，保存后再填）</label>
+          <input id="nsKey" type="password" autocomplete="new-password" oninput="modalErr('')" placeholder="sk-… / dahl_…"></div>
       </div>
+      <div><label>环境变量名</label><input id="nsKeyVar" oninput="modalErr('')" placeholder="建好后自动生成"></div>
     </div>
-
     <div class="mfoot">
       <button class="danger" id="mDel" style="margin-right:auto;display:none" onclick="modalDelApi()">删除这个接口</button>
-      <button onclick="closeModal()">取消</button>
+      <button id="mCancel" onclick="closeModal()">取消</button>
       <button class="primary" id="mOk" onclick="modalOk()">创建接口</button>
     </div>
-    <p class="hint">这个弹窗只管接口本身。密钥（备注 / 密钥值 / 环境变量名 / 模型）在接口展开列表里逐把改。</p>
   </div>
 </div>
 
-<!-- 单把密钥：在接口展开列表里点行尾「编辑」打开，只管这一把 -->
+<!-- 密钥弹窗 -->
 <div id="kmodal" class="modal" style="display:none" onclick="if(event.target===this)closeKeyModal()">
-  <div class="mbox" style="max-width:720px">
+  <div class="mbox">
     <div class="mhead">
-      <div>
-        <h3 id="kTitle">密钥</h3>
-        <p class="muted" id="kHint" style="margin:3px 0 0"></p>
-      </div>
+      <div><h3 id="kTitle">密钥</h3><p class="muted" id="kHint" style="margin:3px 0 0"></p></div>
       <button class="mini" onclick="closeKeyModal()" title="关闭">✕</button>
     </div>
     <div id="kBody"></div>
     <div class="mfoot">
       <button class="danger" id="kDel" style="margin-right:auto" onclick="keyModalDel()">删除这把密钥</button>
-      <button class="primary" onclick="closeKeyModal()">完成</button>
+      <button onclick="closeKeyModal()">完成</button>
     </div>
-    <p class="hint">密钥值只写进服务环境，清单里不存明文。改完回列表点「保存并重启」才生效。</p>
   </div>
 </div>
 
-<!-- dsh 版本更新：从 npm 装新版，再把 Termux 补丁重打一遍（npm 升级会把补丁冲掉） -->
+<!-- 更新弹窗 -->
 <div id="umodal" class="modal" style="display:none" onclick="if(event.target===this)closeUpdModal()">
-  <div class="mbox" style="max-width:720px">
+  <div class="mbox">
     <div class="mhead">
-      <div>
-        <h3 id="uTitle">更新 dsh</h3>
-        <p class="muted" id="uHint" style="margin:3px 0 0">从 npm 装新版，再把 Termux 补丁重打一遍</p>
-      </div>
+      <div><h3 id="uTitle">更新 dsh</h3><p class="muted" id="uHint" style="margin:3px 0 0">从 npm 装新版，再把 Termux 补丁重打一遍</p></div>
       <button class="mini" id="uX" onclick="closeUpdModal()" title="关闭">✕</button>
     </div>
-
     <p class="merr" id="uErr" style="display:none"></p>
-
     <div id="uForm">
-      <div class="g3">
-        <div><label>通道</label>
-          <select id="uChan" onchange="updChan()">
-            <option value="latest">latest</option>
-            <option value="next">next</option>
-            <option value="alpha">alpha</option>
-          </select></div>
-        <div><label>目标版本（可手填 registry 上的任意版本）</label>
+      <div class="g2">
+        <div><label>通道</label><select id="uChan" onchange="updChan()">
+          <option value="latest">latest（正式版）</option>
+          <option value="next">next（预发布）</option>
+          <option value="alpha">alpha（最早的预览）</option>
+        </select></div>
+        <div><label>版本（留空 = 按通道取最新）</label>
           <input id="uVer" oninput="updPlan()" placeholder="例如 0.2.0-rc.2"></div>
+      </div>
+      <div class="g2">
         <div><label>现在装的是</label><input id="uFrom" readonly></div>
+        <div><label>&nbsp;</label>
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--fg);cursor:pointer">
+            <input type="checkbox" id="uForce" style="width:auto" onchange="updPlan()"> 强制重装（版本号一样时也重跑一遍）
+          </label></div>
       </div>
-      <p class="hint" style="margin:10px 0 0">
-        <label style="display:inline;color:var(--fg)">
-          <input type="checkbox" id="uForce" style="width:auto" onchange="updPlan()"> 强制重装（版本号一样时也重跑一遍）
-        </label>
-      </p>
-      <div class="ustep" style="margin-top:12px">
-        <div class="ucmd">这一趟会做的事</div>
-        <pre id="uPlan"></pre>
-      </div>
+      <pre id="uPlan"></pre>
     </div>
-
     <div id="uLog" style="display:none"></div>
-
     <div class="mfoot">
       <button id="uCancel" onclick="closeUpdModal()">取消</button>
       <button class="primary" id="uOk" onclick="doUpgrade()">确认更新</button>
@@ -351,17 +297,15 @@ th{color:var(--dim);font-weight:500;font-size:12px}
     <p class="hint" id="uFoot">升级期间 dsh-web 会重启，主界面断几十秒。任何一步失败都会自动退回升级前的版本（用改名备份，秒级还原）。</p>
   </div>
 </div>
-<!-- 更新这种长任务：网关后台 job + 轮询现场，弹窗里看进度 -->
+
+<!-- 任务弹窗 -->
 <div id="jmodal" class="modal" style="display:none" onclick="if(event.target===this)closeJobModal()">
-  <div class="mbox" style="max-width:720px">
+  <div class="mbox">
     <div class="mhead">
-      <div>
-        <h3 id="jTitle">任务</h3>
-        <p class="muted" id="jHint" style="margin:3px 0 0"></p>
-      </div>
+      <div><h3 id="jTitle">任务</h3><p class="muted" id="jHint" style="margin:3px 0 0"></p></div>
       <button class="mini" id="jX" onclick="closeJobModal()" title="关闭">✕</button>
     </div>
-    <p class="uwait" id="jWait" style="display:none"></p>
+    <p class="muted" id="jWait" style="display:none"></p>
     <pre id="jLog" style="display:none"></pre>
     <div id="jSteps"></div>
     <div class="mfoot">
@@ -371,28 +315,28 @@ th{color:var(--dim);font-weight:500;font-size:12px}
 </div>
 
 <script>
-var ST = null;                                        // 服务端最新状态
-var DRAFT = { active:{site:'',token:''}, sites:[] };  // 本地编辑中的清单
-var CAND = {};                                        // 'sid/tid' -> 从端点拉回的候选模型
-var HL = {};                                          // 'sid/tid' -> {state,text,dot,title,at}
-var OPEN = {};                                        // 'sid'     -> 这个接口是否展开（展开 = 它的密钥列表）
-var MODAL = { mode:'new', sid:'' };                   // 接口弹窗：新增还是编辑
-var MKEY = { sid:'', tid:'' };                        // 密钥弹窗正在编辑哪一把（空 = 没开）
-
-/**
- * 同一把密钥在这么久内不重复打端点。
- * 原因：上游（聚合站）是按 IP 限速的，页面加载时那次自动探测刚打完，
- * 紧接着再点一次「检测」就会吃 429 —— 那不是配置坏了，是我自己连着打了两遍。
+/* dsh 网关控制台 —— 精简版。
+ * 主页三块：当前生效 / 接口与密钥 / 维护。健康探测、候选模型批操作、清空配置
+ * 等低频功能已删除（要查密钥好不好使，保存时勾「保存后自检」）。
  */
-var RETEST_MS = 20000;
-var HL_MAX_TRY = 3;                                   // 429/503 时最多试几次（含首次）
+var ST = null;
+var DRAFT = { active:{site:'',token:''}, sites:[] };
+var CAND = {};                                          // 'sid/tid' -> 从端点拉回的候选模型
+var OPEN = {};                                          // 'sid' -> 接口是否展开
+var MODAL = { mode:'new', sid:'' };
+var MKEY = { sid:'', tid:'' };
 
 function apiHeaders(){ return { 'content-type': 'application/json' }; }
 
+/** 输出：错误时自动把「输出」折叠区展开，不然用户不知道发生了什么。 */
 function out(t){
   var node = document.getElementById('out');
   node.textContent = '[' + new Date().toTimeString().slice(0,8) + ']\n' + (t || '');
   node.scrollTop = 0;
+  if (/✗|失败/.test(t || '')) {
+    var d = node.closest('details');
+    if (d) d.open = true;
+  }
 }
 function busy(on, label){
   document.querySelectorAll('button').forEach(function(b){ b.disabled = on; });
@@ -403,17 +347,13 @@ function esc(s){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
   });
 }
-/**
- * 调控制台接口。quiet = 后台自己跑的事（比如页面加载时那一次健康探测）：
- * 不禁用按钮、不往输出面板写「执行中…」—— 那会把用户正在做的事吞掉。
- */
+/** 调控制台接口。quiet = 后台自己跑的事：不禁用按钮、不覆盖输出面板。 */
 function api(name, body, quiet){
   if (!quiet) busy(true, name);
   return fetch('/ctl/api/' + name, {
     method:'POST', headers: apiHeaders(), body: JSON.stringify(body || {})
   }).then(function(r){
     if (r.status === 401) {
-      // 白名单外的接口（save 等改配置类）需要登录 dsh
       return { ok:false, out:'这个接口需要先登录 dsh：打开 /app 登录一次，cookie 就对这个地址生效。' };
     }
     return r.json().catch(function(){ return {ok:false, out:'HTTP ' + r.status}; });
@@ -439,12 +379,122 @@ function allTokens(){
 function isActive(sid, tid){
   return DRAFT.active.site === sid && DRAFT.active.token === tid;
 }
-/** 列表里那一列「名称」：用户填的显示名 > 密钥脱敏（dahl.om8Y）> 路由 id */
+/** 列表里那把密钥的「名称」：备注 > 显示名 > 密钥脱敏（sk-7.ca14）> 路由 id
+ *  备注是用户自己填的身份（「主号」），比脱敏串认得出来。 */
 function tokenName(t){
-  return t.label || t.keyHint || t.routeId || (t.id || '');
+  return t.note || t.label || t.keyHint || t.routeId || (t.id || '');
+}
+/** 这个接口下面「启用」的那把密钥 —— 全局最多只有一把。 */
+function enabledTok(s){
+  var arr = s.tokens.filter(function(t){ return t.enabled; });
+  return arr.length ? arr[0] : null;
+}
+function el(id){ return document.getElementById(id); }
+
+/* ---------------------------------------------------------------- 渲染 */
+
+function renderSub(st){
+  var a = st.active || {};
+  var html;
+  if (a.routeId) {
+    html = '共 <b>' + st.sites.length + '</b> 个接口 / <b>' + allTokens().length + '</b> 把密钥 · ' +
+      '局域网 <b>http://' + esc(st.lanIp || '?') + ':8030</b> · 本机 <b>http://127.0.0.1:8030</b>';
+  } else {
+    html = '还没配任何接口，dsh 用的是官方默认端点。';
+  }
+  document.getElementById('sub').innerHTML = html;
 }
 
-/* ---------------------------------------------------------------- 渲染：服务 */
+/** 「当前生效」卡片：第一大字号，进来一眼看到在用哪一把。 */
+function renderCur(st){
+  var a = st.active || {};
+  var s = siteById(a.site), t = tokById(a.site, a.token);
+  var has = !!(a.routeId || (s && t));
+  document.getElementById('curCard').style.display = has ? '' : 'none';
+  if (!has) return;
+  document.getElementById('curSite').textContent =
+    (s ? (s.name || s.id) : a.site) + ' · ' + (t ? tokenName(t) : a.token);
+  document.getElementById('curUrl').textContent =
+    (s ? s.baseURL : '') + (s ? '  （' + s.api + '）' : '');
+  document.getElementById('curKey').innerHTML =
+    (t && t.hasKey ? '密钥 <b>' + esc(t.keyMasked || '已存') + '</b>' : '<span style="color:var(--warn)">密钥还没填</span>') +
+    ' · 模型 <b>' + esc(a.model || (t ? t.defaultModel : '') || '—') + '</b>';
+  document.getElementById('curEdit').style.display = t ? '' : 'none';
+}
+function curEditKey(){
+  var a = (ST && ST.active) || {};
+  if (a.site && a.token) openKeyModal(a.site, a.token);
+}
+
+/** 接口行：一行一个接口；点行展开它的密钥列表；行尾「编辑」改接口本身。 */
+function apiRowHtml(s){
+  var sid = s.id;
+  var on = enabledTok(s);
+  var miss = s.tokens.filter(function(t){ return !t.hasKey && !t._newKey; }).length;
+  var txt = on ? '当前生效' : (miss ? '待命 · 缺密钥' : '待命');
+  return '<div class="arow" onclick="toggleApi(\'' + sid + '\')">' +
+      '<div class="top">' +
+        '<button class="chev" data-achev="' + esc(sid) + '">' + (OPEN[sid] ? '▾' : '▸') + '</button>' +
+        '<span class="a-nm">' + esc(s.name || sid) + (on ? ' · ' + esc(tokenName(on)) : '') +
+          ' <span class="badge ' + (on ? 'on' : '') + '">' + txt + '</span></span>' +
+        '<span class="a-url">' + esc(s.baseURL) + '</span>' +
+        '<span class="a-act">' +
+          '<button class="mini" onclick="event.stopPropagation();addKeyHere(\'' + sid + '\')">＋ 增加密钥</button>' +
+          '<button class="mini" onclick="event.stopPropagation();openApiModal(\'' + sid + '\')">编辑</button>' +
+        '</span>' +
+      '</div>' +
+      '<div class="adet" data-adet="' + esc(sid) + '" style="' + (OPEN[sid] ? '' : 'display:none') + '">' +
+        s.tokens.map(function(t){ return keyRowHtml(s, t); }).join('') +
+      '</div>' +
+    '</div>';
+}
+
+/** 密钥行：开关（= 当前生效）+ 名称/掩码/模型 + 编辑/删除。 */
+function keyRowHtml(s, t){
+  var sid = s.id, tid = t.id;
+  var sub = [];
+  if (t.hasKey) sub.push('密钥 ' + (t.keyMasked || '已存'));
+  else if (t._newKey) sub.push('密钥已填（没保存）');
+  else sub.push('<span style="color:var(--warn)">缺密钥</span>');
+  if (t.defaultModel) sub.push('模型 ' + esc(t.defaultModel));
+  if (t.models.length > 1) sub.push('共 ' + t.models.length + ' 个模型');
+  if (!t.models.length) sub.push('<span style="color:var(--warn)">缺模型（草稿，不写进 dsh）</span>');
+  return '<div class="krow' + (t.enabled ? '' : ' off') + '" data-row="' + key(sid, tid) + '">' +
+    '<span class="sw"><input type="checkbox" ' + (t.enabled ? 'checked' : '') +
+      ' onchange="setEnabled(\'' + sid + '\',\'' + tid + '\',this.checked)" title="同一时间只有一把启用"><i></i></span>' +
+    '<span class="k-main">' +
+      '<span class="k-nm" data-cell="name">' + esc(tokenName(t)) +
+        (isActive(sid, tid) ? ' <span class="badge on">当前</span>' : '') +
+        (t.registered ? '' : (t.enabled && t.hasKey ? ' <span class="badge warn">未写入 · 保存后生效</span>' : '')) +
+      '</span>' +
+      '<div class="k-sub">' + sub.join(' · ') + '</div>' +
+    '</span>' +
+    '<span class="k-act">' +
+      '<button class="mini" onclick="openKeyModal(\'' + sid + '\',\'' + tid + '\')">编辑</button>' +
+      '<button class="mini danger" onclick="delToken(\'' + sid + '\',\'' + tid + '\')">删</button>' +
+    '</span>' +
+  '</div>';
+}
+
+function renderList(){
+  var box = document.getElementById('list');
+  if (!DRAFT.sites.length) {
+    box.innerHTML = '<p class="muted" style="margin:6px 4px">还没有接口。点下面「＋ 新增接口」建一个（接口地址 + 协议），再往里加密钥。</p>';
+  } else {
+    box.innerHTML = DRAFT.sites.map(function(s){ return apiRowHtml(s); }).join('');
+  }
+  refreshKeyModal();
+}
+
+function renderPresets(st){
+  var fixed = (st.presets || []).filter(function(p){ return p.kind === 'fixed'; });
+  var cloud = (st.presets || []).filter(function(p){ return p.kind !== 'fixed'; });
+  var opt = function(p){ return '<option value="' + esc(p.id) + '">' + esc(p.label) + '  ·  ' + esc(p.url) + '</option>'; };
+  document.getElementById('nsTpl').innerHTML =
+    '<option value="">— 自定义（自己填下面的字段）—</option>' +
+    '<optgroup label="固定内置（本地 / 自建聚合）">' + fixed.map(opt).join('') + '</optgroup>' +
+    '<optgroup label="常用云端端点">' + cloud.map(opt).join('') + '</optgroup>';
+}
 
 function renderServices(st){
   document.getElementById('services').innerHTML = st.services.map(function(s){
@@ -457,117 +507,12 @@ function renderServices(st){
     (st.lanIp ? ' · 网关 http://' + st.lanIp + ':8030/' : '');
 }
 
-function renderSub(st){
-  var tok = /[?&]token=([A-Za-z0-9_-]+)/.exec(st.dshUrl || '');
-  var a = st.active || {};
-  var html;
-  if (a.routeId) {
-    html = '共 <b>' + st.sites.length + '</b> 个接口 / <b>' + allTokens().length + '</b> 把密钥' +
-      ' · 当前生效 <b>' + esc(a.routeId) + '</b> / ' + esc(a.model || '—') +
-      ' · <a href="/app' + (tok ? '?token=' + tok[1] : '') + '">进入 dsh 主界面</a>';
-  } else {
-    html = '还没配任何接口，dsh 用的是官方默认端点。';
-  }
-  document.getElementById('sub').innerHTML = html;
-}
+/* ---------------------------------------------------------------- 密钥弹窗 */
 
-/* ---------------------------------------------------------------- 渲染：密钥列表 */
-
-function healthOf(s, t){
-  var h = HL[key(s.id, t.id)];
-  if (h) return h;
-  if (!t.enabled) return { state:'idle', dot:'', text:'待命', title:'备用密钥：留在清单里，但不写进 dsh（同一时间只有一把启用）' };
-  if (!t.hasKey && !t._newKey) return { state:'idle', dot:'', text:'缺密钥', title:'没填密钥值，保存时会被跳过' };
-  return { state:'idle', dot:'', text:'未检测', title:'点接口行尾的「检测」；或点密钥行尾的「编辑」，在弹窗里点「检测」' };
-}
-
-/** 这个接口下面「启用」的那把密钥 —— 全局最多只有一把，所以至多一个接口拿得到。 */
-function enabledTok(s){
-  var arr = s.tokens.filter(function(t){ return t.enabled; });
-  return arr.length ? arr[0] : null;
-}
-
-/** 接口行：一行一个接口地址。行首 ▸ 展开 = 这个接口的密钥列表；行尾「编辑」= 打开它的完整配置弹窗。 */
-function apiRowHtml(s){
-  var sid = s.id;
-  var on = enabledTok(s);
-  var h = on ? healthOf(s, on)
-             : { state:'idle', dot:'', text:'待命', title:'这个接口下面还没有启用中的密钥' };
-  var miss = s.tokens.filter(function(t){ return !t.hasKey && !t._newKey; }).length;
-  return '<div class="arow" data-api="' + esc(sid) + '" onclick="toggleApi(\'' + sid + '\')">' +
-      '<button class="chev" data-achev="' + esc(sid) + '" title="展开 / 收起这个接口的密钥列表">' +
-        (OPEN[sid] ? '▾' : '▸') + '</button>' +
-      '<span class="a-url" data-url="' + esc(sid) + '" title="' + esc(s.baseURL) + '">' + esc(s.baseURL) + '</span>' +
-      '<span class="a-nm">' + esc(s.name || sid) + (on ? '<span class="cur">当前</span>' : '') + '</span>' +
-      '<span class="a-proto">' + esc(s.api) + '</span>' +
-      '<span class="a-cnt">' + s.tokens.length + ' 把密钥' + (miss ? ' · ' + miss + ' 把缺密钥' : '') + '</span>' +
-      '<span class="c-hl ' + esc(h.state) + '" data-ahl="' + esc(sid) + '" title="' + esc(h.title || '') + '">' +
-        esc(h.text) + '</span>' +
-      // stopPropagation：这一行整行都是「展开」，点行尾按钮不能被它吃掉
-      '<span class="a-act">' +
-        '<button class="mini" data-ahealth="' + esc(sid) + '" ' +
-          'onclick="event.stopPropagation();healthApi(\'' + sid + '\')" ' +
-          'title="串行测这个接口下面所有已存密钥（每把之间停 0.7 秒；20 秒内刚测过的复用上次结果，429 会退避重试）">检测</button>' +
-        '<button class="mini" data-aedit="' + esc(sid) + '" ' +
-          'onclick="event.stopPropagation();openApiModal(\'' + sid + '\')" ' +
-          'title="改这个接口本身：接口地址 / 协议 / 显示名（对挂在它下面的所有密钥一起生效）">编辑</button>' +
-      '</span>' +
-    '</div>' + apiDetHtml(s);
-}
-
-/** 接口展开区：这个接口的密钥列表 + 最下边的「＋ 增加密钥」。 */
-function apiDetHtml(s){
-  var sid = s.id;
-  var body = s.tokens.length
-    ? '<div class="khead"><span></span><span></span><span>名称</span><span>备注</span>' +
-      '<span style="text-align:right">健康</span><span style="text-align:right">操作</span></div>' +
-      s.tokens.map(function(t){ return keyRowHtml(s, t); }).join('')
-    : '<p class="muted" style="margin:2px 0 0">这个接口下面还没有密钥 —— 点下面的「＋ 增加密钥」。</p>';
-  return '<div class="adet" data-adet="' + esc(sid) + '"' + (OPEN[sid] ? '' : ' style="display:none"') + '>' +
-      '<div class="klist">' + body +
-        '<div class="kadd">' +
-          '<button onclick="addKeyTo(\'' + sid + '\')" title="复用这个接口的地址与协议，只多一把密钥">＋ 增加密钥</button>' +
-          '<span class="muted">新加的默认「待命」（同一时间只有一把启用），要用它再打开左边的开关。' +
-            '密钥值、模型这些点行尾的「编辑」改。</span>' +
-        '</div>' +
-      '</div>' +
-    '</div>';
-}
-
-/** 密钥行：接口展开后的一行 = 一把密钥。行尾「编辑」= 这把密钥的全部配置，「删除」= 移除这把。 */
-function keyRowHtml(s, t){
-  var sid = s.id, tid = t.id, k = key(sid, tid);
-  var on = isActive(sid, tid);
-  var h = healthOf(s, t);
-  return '<div class="krow' + (t.enabled ? '' : ' off') + '" data-row="' + esc(k) + '">' +
-      '<label class="sw" title="' + (t.enabled ? '当前启用的就是这把（同一时间只有一把）'
-                             : '点这里切到这把 —— 原来启用的那把会自动变成待命') + '">' +
-        '<input type="checkbox" ' + (t.enabled ? 'checked' : '') +
-        ' onchange="setEnabled(\'' + sid + '\',\'' + tid + '\',this.checked)"><i></i></label>' +
-      '<span class="dot ' + esc(h.dot) + '" title="' + esc(h.title || '') + '"></span>' +
-      '<span class="c-nm" title="' + esc(t.routeId || '') + '">' + esc(tokenName(t)) +
-        (on ? '<span class="cur">当前</span>' : '') + '</span>' +
-      '<span class="c-nt" data-note="' + esc(k) + '">' + esc(t.note || '—') + '</span>' +
-      '<span class="c-hl ' + esc(h.state) + '" data-hl="' + esc(k) + '" title="' + esc(h.title || '') + '">' +
-        esc(h.text) + '</span>' +
-      '<span class="c-act">' +
-        '<button class="mini" data-kedit="' + esc(k) + '" onclick="openKeyModal(\'' + sid + '\',\'' + tid + '\')" ' +
-          'title="改这一把：备注 / 显示名 / 密钥值 / 环境变量名 / 模型">编辑</button>' +
-        '<button class="mini danger" data-kdel="' + esc(k) + '" onclick="delToken(\'' + sid + '\',\'' + tid + '\')" ' +
-          'title="从清单里删掉这一把（还没保存，点「保存并重启」才生效）">删除</button>' +
-      '</span>' +
-    '</div>';
-}
-
-/**
- * 密钥弹窗的正文：这一把密钥的全部配置。密钥那一级没有行内展开，
- * 所以备注 / 显示名 / 密钥值 / 环境变量名 / 模型全部平铺在这里 —— 打开的就是这一把的配置内容。
- */
 function keyModalHtml(s, t){
   if (!s || !t) return '';
   var sid = s.id, tid = t.id, k = key(sid, tid);
   var on = isActive(sid, tid);
-  var h = healthOf(s, t);
 
   var badge = t.hasKey
     ? '<span class="badge ok">密钥已存 ' + esc(t.keyMasked || '') + '</span>'
@@ -582,9 +527,7 @@ function keyModalHtml(s, t){
   var candHtml = '';
   if (cand) {
     candHtml = '<div class="cand">' +
-      '<div class="muted" style="margin-bottom:6px">端点返回 ' + cand.length + ' 个模型：' +
-      ' <a href="javascript:void(0)" onclick="candAll(\'' + sid + '\',\'' + tid + '\')">全选</a>' +
-      ' · <a href="javascript:void(0)" onclick="candNone(\'' + sid + '\',\'' + tid + '\')">清空</a></div>' +
+      '<div class="muted" style="margin-bottom:6px">端点返回 ' + cand.length + ' 个模型，勾上就加入：</div>' +
       cand.map(function(m){
         return '<label><input type="checkbox" ' + (t.models.indexOf(m) >= 0 ? 'checked' : '') +
           ' onchange="toggleModel(\'' + sid + '\',\'' + tid + '\',' + esc(JSON.stringify(m)) + ',this.checked)">' +
@@ -594,20 +537,13 @@ function keyModalHtml(s, t){
 
   return '<div class="mkey' + (t.enabled ? '' : ' off') + '" data-mkey="' + esc(k) + '">' +
     '<div class="bar">' +
-      '<span class="rid">' + esc(t.routeId || (sid + '-' + tid)) + '</span>' +
-      badge + reg +
+      '<span class="rid">' + esc(t.routeId || (sid + '-' + tid)) + '</span>' + badge + reg +
       (on ? '<span class="badge on">当前生效</span>' : '') +
-      '<span class="badge ' + esc(h.state === 'ok' ? 'ok' : h.state === 'no' ? 'no' : h.state === 'warn' ? 'warn' : '') +
-        '" data-mhint="' + esc(k) + '" title="' + esc(h.title || '') + '">' + esc(h.text) + '</span>' +
-      '<span style="flex:1"></span>' +
-      '<button class="mini" onclick="healthOne(\'' + sid + '\',\'' + tid + '\',false,true)">检测</button>' +
     '</div>' +
-
-    '<div class="muted" style="margin:-2px 0 10px">接口 ' + esc(s.name || sid) + ' · ' + esc(s.api) +
+    '<div class="muted" style="margin:-2px 0 2px">接口 ' + esc(s.name || sid) + ' · ' + esc(s.api) +
       ' @ ' + esc(s.baseURL) + ' —— 接口地址和协议在这里改不了，要改去接口行尾的「编辑」。</div>' +
-
     '<div class="g3">' +
-      '<div><label>备注</label><input value="' + esc(t.note) + '" placeholder="例如：主号 / 02o8is9c34@paytrust.cc" ' +
+      '<div><label>备注</label><input value="' + esc(t.note) + '" placeholder="例如：主号 / 邮箱" ' +
         'oninput="setTok(\'' + sid + '\',\'' + tid + '\',\'note\',this.value)"></div>' +
       '<div><label>显示名（留空 = 用密钥自动脱敏，如 sk-7.ca14）</label><input value="' + esc(t.label || '') + '" ' +
         'placeholder="' + esc(t.keyHint || '') + '" ' +
@@ -615,7 +551,6 @@ function keyModalHtml(s, t){
       '<div><label>环境变量名</label><input value="' + esc(t.keyVar) + '" ' +
         'oninput="setTokKeyVar(\'' + sid + '\',\'' + tid + '\',this.value)"></div>' +
     '</div>' +
-
     '<div class="sk">' +
       '<label style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
         '<span>密钥值（填了才写入；留空＝沿用现有的）</span>' +
@@ -625,14 +560,10 @@ function keyModalHtml(s, t){
         'placeholder="dahl_… / sk-… / freellmapi-…" ' +
         'oninput="setTok(\'' + sid + '\',\'' + tid + '\',\'_newKey\',this.value)">' +
     '</div>' +
-
     '<div class="sk">' +
       '<div class="row" style="justify-content:space-between">' +
         '<label style="margin:0">模型（第一个是这把密钥的默认）</label>' +
-        '<span class="row">' +
-          '<button class="mini" onclick="pullModels(\'' + sid + '\',\'' + tid + '\')">从端点拉取模型列表</button>' +
-          '<button class="mini" onclick="copyModels(\'' + sid + '\',\'' + tid + '\')">同步给本接口其它密钥</button>' +
-        '</span>' +
+        '<button class="mini" onclick="pullModels(\'' + sid + '\',\'' + tid + '\')">从端点拉取模型列表</button>' +
       '</div>' +
       '<div class="tags">' + (t.models.length
         ? t.models.map(function(m, i){
@@ -640,8 +571,8 @@ function keyModalHtml(s, t){
               (i === 0 ? '<span class="muted" style="font-size:11px">默认</span>' : '') +
               '<button title="移除" onclick="delModel(\'' + sid + '\',\'' + tid + '\',' + i + ')">×</button></span>';
           }).join('')
-        : '<span class="muted">还没有模型 —— 先点「从端点拉取模型列表」。</span>') + '</div>' +
-      '<div class="row" style="margin-top:6px">' +
+        : '<span class="muted">还没有模型 —— 点「从端点拉取模型列表」。</span>') + '</div>' +
+      '<div class="row" style="margin-top:8px">' +
         '<input id="km-' + sid + '-' + tid + '" placeholder="也可以手填一个模型 id，回车添加" style="max-width:420px" ' +
           'onkeydown="if(event.key===\'Enter\'){addModel(\'' + sid + '\',\'' + tid + '\')}">' +
         '<button class="mini" onclick="addModel(\'' + sid + '\',\'' + tid + '\')">添加</button>' +
@@ -651,7 +582,7 @@ function keyModalHtml(s, t){
   '</div>';
 }
 
-/** 打开某一把密钥的弹窗（列表里那一行行尾的「编辑」）。 */
+/** 打开某一把密钥的弹窗。 */
 function openKeyModal(sid, tid){
   var s = siteById(sid), t = tokById(sid, tid);
   if (!s || !t) { out('这把密钥已经不在清单里了，刷新一下再试。'); return; }
@@ -659,11 +590,16 @@ function openKeyModal(sid, tid){
   el('kTitle').textContent = '密钥 · ' + (t.note || t.label || (sid + '-' + tid));
   el('kHint').textContent = '在接口 ' + (s.name || sid) + ' 下面（' + s.api + '）。' +
     (t.enabled ? '它是当前启用的那把 —— 也是被写进 dsh 的那条路由。'
-               : '它现在是待命：同一时间只有一把启用，要用它回列表打开左边的开关。');
+               : '它现在是待命：要用它回列表打开左边的开关，当前那把会自动让位。');
   el('kBody').innerHTML = keyModalHtml(s, t);
   el('kmodal').style.display = 'flex';
   el('kmodal').querySelector('.mbox').scrollTop = 0;
   setTimeout(function(){ var f = el('km-' + sid + '-' + tid); if (f) f.focus(); }, 30);
+}
+
+/** 接口行里「＋ 密钥」：在这个接口下面新加一把。 */
+function addKeyHere(sid){
+  addKeyTo(sid);
 }
 
 function closeKeyModal(){
@@ -677,11 +613,8 @@ function keyModalDel(){
   if (delToken(MKEY.sid, MKEY.tid)) closeKeyModal();
 }
 
-/**
- * 列表重绘时带着密钥弹窗一起重画 —— 两处显示的是同一份 DRAFT，
- * 只刷一处就会出现「行里改了、弹窗里还是旧的」。滚动位置和输入焦点都要保住，
- * 不然点个模型勾选，输入框就被弹回顶部 / 失去焦点。
- */
+/** 列表重绘时带着密钥弹窗一起重画（同一份 DRAFT，只刷一处会不一致）。
+ * 滚动位置和输入焦点都要保住，不然点个勾选输入框就被弹回顶部。 */
 function refreshKeyModal(){
   if (!MKEY.sid || !MKEY.tid) return;
   var box = el('kBody');
@@ -703,65 +636,27 @@ function refreshKeyModal(){
   }
 }
 
-function renderList(){
-  var box = document.getElementById('list');
-  if (!DRAFT.sites.length) {
-    box.innerHTML = '<p class="muted">还没有任何接口。点下面的「＋ 新增接口」建一个' +
-      '（一个接口地址 + 一种协议），再往里加密钥。</p>';
-  } else {
-    box.innerHTML = DRAFT.sites.map(function(s){ return apiRowHtml(s); }).join('');
-  }
-  refreshKeyModal();   // 密钥弹窗开着的话，它显示的是同一份数据，一起重画
-}
+/* ---------------------------------------------------------------- 接口弹窗 */
 
-function renderPresets(st){
-  var fixed = (st.presets || []).filter(function(p){ return p.kind === 'fixed'; });
-  var cloud = (st.presets || []).filter(function(p){ return p.kind !== 'fixed'; });
-  var opt = function(p){ return '<option value="' + esc(p.id) + '">' + esc(p.label) + '  ·  ' + esc(p.url) + '</option>'; };
-  document.getElementById('nsTpl').innerHTML =
-    '<option value="">— 自定义（自己填下面的字段）—</option>' +
-    '<optgroup label="固定内置（本地 / 自建聚合）">' + fixed.map(opt).join('') + '</optgroup>' +
-    '<optgroup label="常用云端端点">' + cloud.map(opt).join('') + '</optgroup>';
-}
-
-/* ---------------------------------------------- 新增 / 编辑接口：一律走弹窗 */
-
-function el(id){ return document.getElementById(id); }
-
-/**
- * 弹窗里的校验没过：**红条写在弹窗里**给用户看，再往输出面板抄一份留痕，并聚焦出问题的输入框。
- *
- * 以前这里只调 out()，而输出面板在页面底部、被弹窗遮罩盖着 —— 用户点了「创建接口」
- * 看不到任何变化，只会报「点了没反应」。校验失败必须是可见的，不然就等于按钮是坏的。
- */
 function modalFail(msg, focusId){
   modalErr(msg);
-  out(msg);
-  if (focusId && el(focusId)) el(focusId).focus();
+  out('✗ ' + msg);
+  if (focusId) { var f = el(focusId); if (f) f.focus(); }
 }
-
-/** 写 / 清弹窗顶部的红条（传空串 = 清掉）。弹窗里任何输入都会把它清掉，见 #modal 上的 oninput。 */
 function modalErr(msg){
-  var node = el('mErr');
-  if (!node) return;
-  if (msg) { node.textContent = msg; node.style.display = ''; }
-  else { node.textContent = ''; node.style.display = 'none'; }
+  var e = el('mErr');
+  if (!msg) { e.style.display = 'none'; e.textContent = ''; return; }
+  e.textContent = msg;
+  e.style.display = '';
 }
 
-/**
- * 打开接口弹窗。只管接口本身（地址 / 协议 / 显示名 / 预设）—— 密钥不在这里，
- * 密钥在接口展开列表里逐把改（行尾「编辑」/「删除」）。
- *   openApiModal()          → 新增接口（可以顺手填第一把密钥）
- *   openApiModal('gateway') → 编辑接口
- */
 function openApiModal(sid){
   var s = sid ? siteById(sid) : null;
   MODAL = { mode: s ? 'edit' : 'new', sid: s ? sid : '' };
 
   el('mTitle').textContent = s ? ('编辑接口 · ' + sid) : '新增接口';
   el('mHint').textContent = s
-    ? '只管这个接口本身：接口地址 / 协议 / 显示名。它们对挂在下面的所有密钥一起生效；' +
-      '密钥（密钥值 / 备注 / 模型）在接口展开列表里逐把编辑。'
+    ? '只管这个接口本身：接口地址 / 协议 / 显示名。它们对挂在下面的所有密钥一起生效。'
     : '一个接口 = 一个接口地址 + 一种协议；密钥挂在这个接口下面，可以有多把。';
   el('mOk').textContent = s ? '保存修改' : '创建接口';
   el('mFirstKey').style.display = s ? 'none' : '';
@@ -803,7 +698,7 @@ function modalOk(){
   else createSite();
 }
 
-/** 保存接口本身的改动（接口地址 / 协议 / 显示名）。密钥不动 —— 那些在密钥弹窗里改。 */
+/** 保存接口本身的改动（接口地址 / 协议 / 显示名）。密钥不动。 */
 function updateApi(){
   var sid = MODAL.sid, s = siteById(sid);
   if (!s) { closeModal(); return; }
@@ -821,9 +716,9 @@ function updateApi(){
   closeModal();
   renderList();
   persistManifest('已改接口 ' + sid + '：' + apiProto + ' @ ' + url + '\n' +
-    '接口地址和协议对挂在它下面的 ' + s.tokens.length + ' 把密钥一起生效；密钥本身（值 / 环境变量名 / 模型）没动。\n' +
-    (pending ? '有 ' + pending + ' 把填了新密钥值 —— 那要回列表点「保存并重启」才写进服务环境。'
-             : '要生效点「保存并重启」。'));
+    '接口地址和协议对挂在它下面的 ' + s.tokens.length + ' 把密钥一起生效；密钥本身没动。\n' +
+    (pending ? '有 ' + pending + ' 把填了新密钥值 —— 那要回列表点「保存并生效」才写进服务环境。'
+             : '要生效点「保存并生效」。'));
 }
 
 function nsApplyPreset(){
@@ -853,20 +748,18 @@ function createSite(){
   var apiProto = el('nsApi').value;
   var name = el('nsName').value.trim() || sid;
   var note = el('nsNote').value.trim();
-  // 注意别叫 key：那个名字是上面的辅助函数 key(sid,tid)，一遮蔽后面就炸
   var keyVal = el('nsKey').value;
   var keyVar = el('nsKeyVar').value.trim() || autoKeyVar(sid || 'site', 't1');
 
   // 校验失败一律走 modalFail：弹窗里看得见 + 输出面板留痕 + 聚焦出问题的框。
-  // 只写 out() 的话用户看不到（弹窗盖着输出面板），只会觉得「点了没反应」。
   if (!sid) { modalFail('还没填「接口 id」。它是这个接口的唯一标识，用小写字母开头，例如 intern。', 'nsId'); return; }
   if (!/^[a-z][a-z0-9-]*$/.test(sid)) {
     modalFail('「接口 id」只能用 小写字母、数字、连字符，而且要以小写字母开头 —— 你填的是 “' +
-      sid + '”（大写、下划线、点都不行）。比如改成 “' + sid.toLowerCase().replace(/[^a-z0-9-]/g, '-') + '”。', 'nsId');
+      sid + '”。比如改成 “' + sid.toLowerCase().replace(/[^a-z0-9-]/g, '-') + '”。', 'nsId');
     return;
   }
   if (DRAFT.sites.some(function(s){ return s.id === sid; })) {
-    modalFail('接口 id「' + sid + '」已经存在了，换一个（列表里那个同名接口就是）。', 'nsId'); return;
+    modalFail('接口 id「' + sid + '」已经存在了，换一个。', 'nsId'); return;
   }
   if (!url) { modalFail('还没填「接口地址」。要带上协议头，例如 https://api.example.com/v1。', 'nsUrl'); return; }
   if (!/^https?:\/\//.test(url)) {
@@ -882,7 +775,7 @@ function createSite(){
     id: sid, name: name, api: apiProto, baseURL: url, preset: el('nsTpl').value || '',
     tokens: [{
       id: 't1', note: note, label: '', keyVar: keyVar,
-      defaultModel: '', models: [], enabled: false,   // 待命：同一时间只有一把启用，别抢当前那把的位置
+      defaultModel: '', models: [], enabled: false,   // 待命：同一时间只有一把启用
       hasKey: false, keyMasked: '', keyHint: '', registered: false, _newKey: keyVal, _keyVarEdited: true,
     }],
   });
@@ -891,20 +784,16 @@ function createSite(){
   OPEN[sid] = true;                    // 建完就展开，直接看到它的密钥列表
   closeModal();
   renderList();
-  // 同样立刻落盘：新接口这会儿多半还没模型，走 save() 会被拒、连带清单也写不进去。
+  // 立刻落盘（只写清单，不动 dsh）：新接口这会儿多半还没模型，走 save() 会被过滤掉。
   persistManifest('已新建接口 ' + sid + '（' + apiProto + ' @ ' + url + '）并带上第一把密钥。\n' +
-    (keyVal ? '密钥值已填，保存时会写进去。\n' : '密钥值还空着 —— 在接口展开列表里点这行行尾的「编辑」填上，或保存后再填。\n') +
-    (enabledRow() && enabledRow().s.id === sid
-      ? '它现在是启用状态（清单里原本一把都没启用，所以顶上来了）。\n'
-      : '它是「待命」状态：同一时间只有一把启用，要换到它就把列表里左边的开关打开。\n') +
-    '模型列表在密钥弹窗里点「从端点拉取模型列表」拉一把，再「保存并重启」就行。');
+    (keyVal ? '密钥值已填，保存时会写进去。\n' : '密钥值还空着 —— 点这行的「编辑」填上。\n') +
+    '模型在密钥弹窗里点「从端点拉取模型列表」拉一把，再「保存并生效」就行。');
 }
 
-/** 「＋ 增加密钥」（在某个接口展开列表的最下边）：复用这个接口的地址与协议，只多一把密钥。 */
+/** 「＋ 密钥」：复用这个接口的地址与协议，只多一把密钥。 */
 function addKeyTo(sid){
   var s = siteById(sid);
   if (!s) { out('这个接口已经不在清单里了，刷新一下再试。'); return; }
-  // 复用模板：优先这个接口里「当前生效」的那把，否则第一把
   var tpl = enabledTok(s) || s.tokens[0] || null;
 
   var tid = nextId('t', s.tokens.map(function(t){ return t.id; }));
@@ -918,18 +807,14 @@ function addKeyTo(sid){
     enabled: false,                             // 待命：新加的不会抢当前启用那把
     hasKey: false, keyMasked: '', keyHint: '', registered: false, _newKey: '', _keyVarEdited: false,
   });
-  OPEN[sid] = true;                             // 保证接口是展开的
+  OPEN[sid] = true;
   renderList();
   // 立刻落盘（只写清单，不动 dsh）：不然刷新一下这行就没了，等于白点。
-  persistManifest(
-    '接口 ' + sid + ' 加了 ' + sid + '-' + tid + '。' +
+  persistManifest('接口 ' + sid + ' 加了 ' + sid + '-' + tid + '。' +
     (tpl ? '\n已复用「' + (tpl.note || tpl.id) + '」的配置：同一个接口地址、同一个协议、' + tpl.models.length + ' 个模型都继承过来了。'
          : '\n（这个接口还没有别的密钥，模型得自己拉一次。）') +
-    '\n环境变量名自动用了 ' + autoKeyVar(sid, tid) + ' —— 不复用旧的是有意的，否则两把密钥会指向同一个环境变量。' +
-    '\n它现在是「待命」：同一时间只有一把启用，要用它就打开列表里的开关（当前那把会自动让位）。' +
-    '\n点这行行尾的「编辑」进密钥弹窗，填上密钥值和备注，再回列表点「保存并重启」就生效。');
+    '\n点这行行尾的「编辑」进密钥弹窗，填上密钥值和备注，再回列表点「保存并生效」就让生效。');
 }
-
 
 /** 清掉某把密钥指向的环境变量（密钥本身留着，变成「缺密钥」）。 */
 function clearKeyVar(sid, tid){
@@ -949,18 +834,13 @@ function setTok(sid, tid, f, v){
   var t = tokById(sid, tid);
   if (!t) return;
   t[f] = v;
-  if (f === 'note') {
-    // 别把局部变量叫 el —— 那个名字是上面的弹窗辅助函数 el(id)，一遮蔽后面就炸
-    var node = document.querySelector('[data-note="' + key(sid, tid) + '"]');
-    if (node) node.textContent = v || '—';
-  }
   if (f === 'label') {
-    // 只换掉 .c-nm 里的文本，保留「当前」小徽章，别整表重绘
-    var cell = document.querySelector('[data-row="' + key(sid, tid) + '"] .c-nm');
+    // 只换掉 .k-nm 里的文本，保留徽章，别整表重绘
+    var cell = document.querySelector('[data-row="' + key(sid, tid) + '"] .k-nm');
     if (cell) {
-      var cur = cell.querySelector('.cur');
+      var badges = cell.querySelectorAll('.badge');
       cell.textContent = tokenName(t);
-      if (cur) cell.appendChild(cur);
+      badges.forEach(function(b){ cell.appendChild(b); });
     }
   }
 }
@@ -968,13 +848,8 @@ function setTokKeyVar(sid, tid, v){
   var t = tokById(sid, tid);
   if (t) { t.keyVar = v; t._keyVarEdited = true; }
 }
-/**
- * 启用位的唯一入口 —— 「同一时间只有一把启用」就靠这里守。
- *
- * 启用 = 当前生效 = 会被写进 dsh 的那条路由，三件事在面板上是同一件事：
- * 打开某把的开关，等于把 active 挪过去、把其余全部置为待命。所以任何改启用状态的
- * 地方都必须走这个函数，别再各写各的赋值（那正是以前能同时亮起两把的原因）。
- */
+
+/** 启用位的唯一入口 —— 「同一时间只有一把启用」就靠这里守。 */
 function onlyEnable(sid, tid){
   DRAFT.sites.forEach(function(s){
     s.tokens.forEach(function(t){ t.enabled = (s.id === sid && t.id === tid); });
@@ -993,10 +868,10 @@ function setEnabled(sid, tid, on){
   var t = tokById(sid, tid);
   if (!t) return;
   if (!on) {
-    // 关不掉自己：dsh 至少要留一条能注册的路由，全关等于让它起不来（保存也会被拒）。
+    // 关不掉自己：dsh 至少要留一条能注册的路由，全关等于让它起不来。
     var box = document.querySelector('[data-row="' + key(sid, tid) + '"] input');
     if (box) box.checked = true;
-    out('同一时间只能启用一把，所以关不掉自己。\n想换就直接打开目标那把的开关，这把会自动变成待命。');
+    out('✗ 同一时间只能启用一把，所以关不掉自己。\n想换就直接打开目标那把的开关，这把会自动变成待命。');
     return;
   }
   if (t.enabled) return;
@@ -1006,8 +881,7 @@ function setEnabled(sid, tid, on){
   out('已切到「' + tokenName(t) + '」（' + sid + '-' + tid + '）—— 它同时就是「当前生效」的那把。' +
       (prev && !(prev.s.id === sid && prev.t.id === tid)
         ? '\n原来启用的「' + tokenName(prev.t) + '」已自动转为待命（清单里留着，不写进 dsh）。' : '') +
-      '\n还没写进 dsh —— 点「保存并重启」生效。');
-  healthOne(sid, tid, true);
+      '\n还没写进 dsh —— 点「保存并生效」生效。');
 }
 
 /** 行首 ▸：展开 / 收起一个接口的密钥列表。 */
@@ -1019,9 +893,6 @@ function toggleApi(sid){
   if (c) c.textContent = OPEN[sid] ? '▾' : '▸';
 }
 
-/* toggleOpen / moveTo 已删：密钥行不再有二级展开，密钥的详情与「换接口挂」都不做了 ——
-   一个接口下面就是它的密钥，要换接口就把密钥删掉在目标接口里重加。 */
-
 function nextId(prefix, taken){
   var n = 1, id = prefix + n;
   while (taken.indexOf(id) >= 0) { n++; id = prefix + n; }
@@ -1031,8 +902,6 @@ function autoKeyVar(sid, tid){
   return 'DSH_' + (sid + '_' + tid).toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
 }
 
-/* 旧版的 addFrom / addSiteFromPreset / addTokenTo 已被 addKeyTo + createSite + openApiModal 取代 */
-
 /** 删除一个接口（连带它下面的密钥）。返回是否真删了 —— 弹窗那边要知道该不该跟着关。 */
 function delApi(sid){
   var s = siteById(sid);
@@ -1040,16 +909,15 @@ function delApi(sid){
   if (!confirm('删除接口「' + (s.name || sid) + '」（' + s.baseURL + '）？\n它下面 ' + s.tokens.length +
                ' 把密钥一起移除。\n（环境变量会保留在服务环境里，要清得在密钥弹窗里点「清除已存密钥」）')) return false;
   DRAFT.sites = DRAFT.sites.filter(function(x){ return x.id !== sid; });
-  s.tokens.forEach(function(t){ delete CAND[key(sid, t.id)]; delete HL[key(sid, t.id)]; });
+  s.tokens.forEach(function(t){ delete CAND[key(sid, t.id)]; });
   delete OPEN[sid];
   if (DRAFT.active.site === sid) {
-    // 启用那把在这个接口里被一起删了：启用位接给剩下的第一把。
     var rest = allTokens()[0];
     if (rest) onlyEnable(rest.s.id, rest.t.id);
     else DRAFT.active = { site:'', token:'' };
   }
   renderList();
-  out('已移除接口 ' + sid + '（还没保存，点「保存并重启」才生效）。');
+  out('已移除接口 ' + sid + '（还没保存，点「保存并生效」才生效）。');
   return true;
 }
 
@@ -1058,43 +926,51 @@ function delToken(sid, tid){
   var s = siteById(sid), t = tokById(sid, tid);
   if (!s || !t) return false;
   if (!confirm('删除接口 ' + sid + ' 下的密钥「' + tokenName(t) + '」？\n' +
-               '（只是从清单里移除，点「保存并重启」才真正生效；服务环境里的环境变量会留着，' +
+               '（只是从清单里移除，点「保存并生效」才真正生效；服务环境里的环境变量会留着，' +
                '要清得在密钥弹窗里点「清除已存密钥」）')) return false;
   var wasActive = isActive(sid, tid);
   s.tokens = s.tokens.filter(function(x){ return x.id !== tid; });
-  delete CAND[key(sid, tid)]; delete HL[key(sid, tid)];
+  delete CAND[key(sid, tid)];
   if (wasActive) {
-    // 删掉的正好是启用那把：把启用位接到剩下的第一把上（不能出现「一把都没启用」）。
     var rest = allTokens()[0];
     if (rest) onlyEnable(rest.s.id, rest.t.id);
     else DRAFT.active = { site: '', token: '' };
   }
-  // 密钥弹窗开着的话，refreshKeyModal 会发现这把已经不在了、自己关掉。
   renderList();
-  out('已移除密钥 ' + tid + '（还没保存，点「保存并重启」才生效）。' +
+  out('已移除密钥 ' + tid + '（还没保存，点「保存并生效」才生效）。' +
       (wasActive && allTokens().length
         ? '\n启用位已自动接到 ' + enabledRow().s.id + '-' + enabledRow().t.id + ' —— 至少要留一把启用。' : ''));
   return true;
 }
 
+/* ---------------------------------------------------------------- 模型编辑 */
+
 function addModel(sid, tid){
   var t = tokById(sid, tid);
-  // 别把局部变量叫 el —— 那是上面的弹窗辅助函数
   var node = document.getElementById('km-' + sid + '-' + tid);
   if (!t || !node) return;
   var v = node.value.trim();
   if (!v) return;
-  if (t.models.indexOf(v) < 0) t.models.push(v);
+  if (v.indexOf('\n') >= 0) {
+    v.split('\n').map(function(x){ return x.trim(); }).filter(Boolean).forEach(function(m){
+      if (t.models.indexOf(m) < 0) t.models.push(m);
+    });
+  } else if (t.models.indexOf(v) < 0) {
+    t.models.push(v);
+  }
   if (!t.defaultModel) t.defaultModel = t.models[0];
-  renderList();
+  node.value = '';
+  refreshKeyModal();
 }
+
 function delModel(sid, tid, idx){
   var t = tokById(sid, tid);
   if (!t) return;
   var removed = t.models.splice(idx, 1)[0];
   if (t.defaultModel === removed) t.defaultModel = t.models[0] || '';
-  renderList();
+  refreshKeyModal();
 }
+
 function toggleModel(sid, tid, m, on){
   var t = tokById(sid, tid);
   if (!t) return;
@@ -1102,229 +978,37 @@ function toggleModel(sid, tid, m, on){
   if (on && i < 0) t.models.push(m);
   if (!on && i >= 0) t.models.splice(i, 1);
   if (t.models.indexOf(t.defaultModel) < 0) t.defaultModel = t.models[0] || '';
-  renderList();
-}
-function candAll(sid, tid){
-  var t = tokById(sid, tid);
-  (CAND[key(sid, tid)] || []).forEach(function(m){ if (t.models.indexOf(m) < 0) t.models.push(m); });
-  renderList();
-}
-function candNone(sid, tid){
-  var t = tokById(sid, tid);
-  t.models = t.models.filter(function(m){ return (CAND[key(sid, tid)] || []).indexOf(m) < 0; });
-  if (t.models.indexOf(t.defaultModel) < 0) t.defaultModel = t.models[0] || '';
-  renderList();
-}
-function copyModels(sid, tid){
-  var s = siteById(sid), t = tokById(sid, tid);
-  if (!s || !t) return;
-  if (!t.models.length) { out('这把密钥还没有模型列表，没什么可同步的。'); return; }
-  var n = 0;
-  s.tokens.forEach(function(x){
-    if (x.id === tid) return;
-    t.models.forEach(function(m){ if (x.models.indexOf(m) < 0) { x.models.push(m); n++; } });
-    if (x.models.indexOf(x.defaultModel) < 0) x.defaultModel = x.models[0] || '';
-  });
-  renderList();
-  out('已把这把密钥的模型列表同步给本接口其余 ' + (s.tokens.length - 1) + ' 把密钥（新增 ' + n + ' 条）。');
+  refreshKeyModal();
 }
 
+/** 拉模型列表：填了新密钥就用新的，否则用已存的（环境变量名）。 */
 function pullModels(sid, tid){
   var s = siteById(sid), t = tokById(sid, tid);
   if (!s || !t) return;
-  if (!s.baseURL) { out('这个接口还没填接口地址，点接口行尾的「编辑」填上。'); return; }
+  if (!s.baseURL) { out('✗ 这个接口还没填接口地址，点接口行尾的「编辑」填上。'); return; }
+  out('正在拉模型列表…');
   api('models', { api:s.api, baseUrl:s.baseURL, key:t._newKey || '', keyVar:t.keyVar })
     .then(function(j){
-      var k = key(sid, tid);
       if (j.ok) {
-        CAND[k] = j.models;
+        CAND[key(sid, tid)] = j.models;
         var added = 0;
         j.models.forEach(function(m){ if (t.models.indexOf(m) < 0) { t.models.push(m); added++; } });
         if (t.models.indexOf(t.defaultModel) < 0) t.defaultModel = t.models[0] || '';
-        HL[k] = { state:'ok', dot:'ok', text:'健康', at: Date.now(), title: j.out };
         renderList();
         out('✓ ' + tokenName(t) + ' @ ' + s.baseURL + '\n' + j.out +
             '\n已全部加入（新增 ' + added + ' 个），不想要的取消勾选即可。\n' +
             '注：拉列表成功不代表这把密钥有效 —— 有些聚合站的 /models 不校验鉴权，保存时自检才是准的。');
       } else {
-        HL[k] = { state:'no', dot:'no', text:'异常', at: Date.now(), title: j.out };
         renderList();
         out('✗ ' + tokenName(t) + ' @ ' + s.baseURL + '\n' + j.out +
-            '\n\n排查：密钥值填了吗（用的是还没保存的那把，或已存的那把）？这个地址要不要走代理？' +
+            '\n\n排查：密钥值填了吗？这个地址要不要走代理？' +
             '协议对吗（Anthropic 走 /v1/models + x-api-key，OpenAI 走 /models + Bearer）？');
       }
     });
 }
 
-/* ---------------------------------------------------------------- 健康检测 */
-
-function paintHealth(sid, tid){
-  var s = siteById(sid), t = tokById(sid, tid);
-  if (!s || !t) return;
-  var h = healthOf(s, t);
-  var k = key(sid, tid);
-  var row = document.querySelector('[data-row="' + k + '"]');
-  if (row) {
-    var d = row.querySelector('.dot'); if (d) { d.className = 'dot ' + (h.dot || ''); d.title = h.title || ''; }
-    var l = row.querySelector('[data-hl]'); if (l) { l.textContent = h.text; l.className = 'c-hl ' + h.state; }
-  }
-  // 弹窗里那把密钥的小徽章（弹窗盖着输出面板，检测结果就靠它显示）
-  var mh = document.querySelector('[data-mhint="' + k + '"]');
-  if (mh) {
-    mh.textContent = h.text;
-    mh.title = h.title || '';
-    mh.className = 'badge ' + (h.state === 'ok' ? 'ok' : h.state === 'no' ? 'no' : h.state === 'warn' ? 'warn' : '');
-  }
-  paintApiHealth(sid);
-}
-
-/** 接口行右侧那一列「健康」= 这个接口里启用那把的健康（接口本身不探测）。 */
-function paintApiHealth(sid){
-  var s = siteById(sid);
-  if (!s) return;
-  var cell = document.querySelector('[data-ahl="' + sid + '"]');
-  if (!cell) return;
-  var on = enabledTok(s);
-  var h = on ? healthOf(s, on) : { state:'idle', text:'待命', title:'这个接口下面还没有启用中的密钥' };
-  cell.textContent = h.text;
-  cell.className = 'c-hl ' + h.state;
-  cell.title = h.title || '';
-}
-
-function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
-
-/**
- * 测一把密钥的端点。
- *   silent    —— 不往输出面板写（自动探测 / 接口级检测都走这个，免得冲掉用户刚点的结果）
- *   force     —— 忽略 20 秒缓存，硬打一次（用户自己点「检测」时用）
- *   allowIdle —— 允许测「待命」的密钥。默认不测：待命那把不写进 dsh，测它只是白费配额。
- *                接口行的「检测」会带上它，把该接口下面所有已存密钥一起测。
- * 拿到 429/503 不当结论：先退避重试，重试仍被限就写「限流」。
- */
-function healthOne(sid, tid, silent, force, allowIdle){
-  var s = siteById(sid), t = tokById(sid, tid);
-  if (!s || !t) return Promise.resolve();
-  var k = key(sid, tid);
-  if ((!t.enabled && !allowIdle) || (!t.hasKey && !t._newKey)) { HL[k] = null; paintHealth(sid, tid); return Promise.resolve(); }
-  var prev = HL[k];
-  // 刚测过就复用，别为了一个数字再打一遍 —— 这是「连测几把就报 429、单点检测正常」的真因。
-  if (!force && prev && prev.at && (Date.now() - prev.at) < RETEST_MS) return Promise.resolve(prev);
-  HL[k] = { state:'busy', dot:'warn', text:'检测中', title:'', at: prev && prev.at };
-  paintHealth(sid, tid);
-
-  function attempt(n){
-    // 探测一律 quiet：它不是用户等着的动作，不该禁用整页按钮。
-    return api('health', { api:s.api, baseUrl:s.baseURL, key:t._newKey || '', keyVar:t.keyVar }, true)
-      .then(function(j){
-        var code = j.code || 0;
-        // 429/503 = 端点限速（实测这个聚合站的 /models 会这样），不是「地址写错」。
-        var limited = code === 429 || code === 503;
-        if (!j.ok && limited && n < HL_MAX_TRY) {
-          // 限流是短窗口的，等一会儿自己就放开了 —— 先重试再下结论。
-          return sleep(600 * n).then(function(){ return attempt(n + 1); });
-        }
-        return { j:j, code:code, limited:limited, tries:n };
-      });
-  }
-
-  return attempt(1).then(function(r){
-    var j = r.j, code = r.code, limited = r.limited;
-    var retried = r.tries > 1 ? '，重试 ' + (r.tries - 1) + ' 次后' : '';
-    HL[k] = j.ok
-      ? { state:'ok', dot:'ok', text:'健康', at:Date.now(),
-          title:(j.out || '') + '（' + (j.ms || 0) + 'ms）' + retried }
-      : limited
-        ? { state:'warn', dot:'warn', text:'限流 ' + code, at:Date.now(),
-            title:(j.out || '') + ' —— 端点按 IP 限速' + retried + '仍被限，' + (RETEST_MS / 1000) + ' 秒后再测' }
-        : { state:'no', dot:'no', text: code ? '异常 ' + code : '异常', at:Date.now(),
-            title: j.out || '探测失败' };
-    paintHealth(sid, tid);
-    if (!silent) out((j.ok ? '✓ ' : limited ? '… ' : '✗ ') + tokenName(t) + ' @ ' + s.baseURL + '\n' + (j.out || '') +
-      (j.ok ? '' : '\n\n（探测只证明这个地址能连、能返回模型列表；429 是端点限速，不是配置问题。）'));
-    return HL[k];
-  });
-}
-
-/**
- * 检测一个接口（接口行尾的「检测」）：把它下面所有填了密钥值的密钥串行测一遍。
- * 和 healthAll 的区别只是「测哪些」—— 这里测这个接口的全部（含待命），healthAll 只测启用那把。
- */
-function healthApi(sid){
-  var s = siteById(sid);
-  if (!s) return Promise.resolve();
-  var toks = s.tokens.filter(function(t){ return t.hasKey || t._newKey; });
-  if (!toks.length) {
-    out('接口 ' + sid + ' 下面的密钥都还没填密钥值，没什么可测的。\n' +
-        '（待命密钥也想测的话，点它行尾的「编辑」把密钥值填上。）');
-    return Promise.resolve();
-  }
-  out('开始检测接口 ' + sid + '：' + toks.length + ' 把密钥，串行（每把之间停 0.7 秒；' +
-      '20 秒内刚测过的直接复用结果，429 会退避重试）…');
-  var i = 0, ok = [], bad = [], soft = [], reused = 0;
-  function step(){
-    if (i >= toks.length) return Promise.resolve();
-    var t = toks[i++], k = key(sid, t.id);
-    var before = HL[k] && HL[k].at;
-    return healthOne(sid, t.id, true, false, true).then(function(){
-      if (before && (Date.now() - before) < RETEST_MS) reused++;
-      var h = HL[k];
-      if (h && h.state === 'ok') ok.push(tokenName(t));
-      else if (h && h.state === 'warn') soft.push(tokenName(t));
-      else if (h && h.state === 'no') bad.push(tokenName(t));
-      if (i < toks.length) return sleep(700).then(step);
-      return step();
-    });
-  }
-  return step().then(function(){
-    var parts = [];
-    if (ok.length) parts.push('可达：' + ok.join(', '));
-    if (bad.length) parts.push('异常（连不上 / 地址写错了）：' + bad.join(', '));
-    if (soft.length) parts.push('限流（端点按 IP 限速，过一会儿再测，不是配置问题）：' + soft.join(', '));
-    out('接口 ' + sid + ' 检测完成：' + toks.length + ' 把。' + (parts.length ? '\n' + parts.join('\n') : '') +
-        (reused ? '\n其中 ' + reused + ' 把是 20 秒内刚测过的，直接复用上次结果（没重复打端点）。' : '') +
-        '\n注意：只测端点可达，不代表密钥有效 —— 验密钥用上面的「端到端自检」。');
-  });
-}
-
-/**
- * 页面加载时那一次静默自动探测：只测「启用」的那把（全局只有一把）。
- * 现在没有整表一键检测的按钮了 —— 想测哪个接口就走它行尾的「检测」。
- * 串行 + 每把之间停顿：一把一把来，别并发把上游的 IP 限速打出来
- * —— 以前并发 3 路，同一 IP 瞬间三个请求，必然 429。
- */
-function healthAll(silent){
-  var rows = allTokens().filter(function(r){ return r.t.enabled && (r.t.hasKey || r.t._newKey); });
-  if (!rows.length) { if (!silent) out('没有「启用 + 已存密钥」的密钥可检测。'); return Promise.resolve(); }
-  if (!silent) out('开始探测 ' + rows.length + ' 把启用中的密钥（串行，每把之间停 ' + 0.7 + ' 秒；20 秒内刚测过的直接复用结果）…');
-  var i = 0, ok = [], bad = [], soft = [], reused = 0;
-  function next(){
-    if (i >= rows.length) return Promise.resolve();
-    var r = rows[i++], k = key(r.s.id, r.t.id);
-    var before = HL[k] && HL[k].at;
-    return healthOne(r.s.id, r.t.id, true, false).then(function(){
-      if (before && (Date.now() - before) < RETEST_MS) reused++;
-      var h = HL[k];
-      if (h && h.state === 'ok') ok.push(tokenName(r.t));
-      else if (h && h.state === 'warn') soft.push(tokenName(r.t));
-      else if (h && h.state === 'no') bad.push(tokenName(r.t));
-      if (i < rows.length) return sleep(700).then(next);
-      return next();
-    });
-  }
-  return next().then(function(){
-    if (silent) return;
-    var parts = [];
-    if (bad.length) parts.push('异常（连不上 / 地址写错了）：' + bad.join(', '));
-    if (soft.length) parts.push('限流（端点按 IP 限速，过一会儿再测，不是配置问题）：' + soft.join(', '));
-    out('检测完成：' + rows.length + ' 把。' + (parts.length ? '\n' + parts.join('\n') : '\n全部端点可达。') +
-        (reused ? '\n其中 ' + reused + ' 把是 20 秒内刚测过的，直接复用上次结果（没重复打端点）。' : '') +
-        '\n注意：只测端点可达，不代表密钥有效 —— 验密钥用「端到端自检」。');
-  });
-}
-
 /* ---------------------------------------------------------------- 保存 */
 
-/** 把 DRAFT 拼成给 /ctl/api/* 的 payload（清单和配置用的是同一份形状）。 */
 function draftPayload(){
   return {
     active: DRAFT.active,
@@ -1339,11 +1023,7 @@ function draftPayload(){
   };
 }
 
-/**
- * 只写清单、不碰 dsh 配置。加接口 / 加密钥 / 改接口都走这个 —— 那时它们通常还没密钥
- * 或缺模型，走 save() 会被 dsh-set-provider 拒，顺带清单也写不进去，
- * 刷新一下刚加的那行就消失了。
- */
+/** 只写清单、不碰 dsh 配置。加接口 / 加密钥 / 改接口都走这个。 */
 function persistManifest(extra){
   var p = draftPayload();
   api('manifest', p).then(function(j){
@@ -1364,9 +1044,8 @@ function save(restart, verify){
       if (!t.models.length) incomplete.push(tokenName(t));
     });
   });
-  if (bad.length) { out('这些有问题，不能保存：\n · ' + bad.join('\n · ')); return; }
-  // 缺模型的密钥写不进 dsh（它要求每把都有模型）：问一次，同意就当草稿留着 ——
-  // 完整的接口照常保存生效，草稿刷新不丢，配齐模型再保存就会写进去。
+  if (bad.length) { out('✗ 这些有问题，不能保存：\n · ' + bad.join('\n · ')); return; }
+  // 缺模型的密钥写不进 dsh（它要求每把都有模型）：问一次，同意就当草稿留着。
   if (incomplete.length && !confirm('以下密钥还没有模型列表：\n · ' + incomplete.join('\n · ') +
       '\n\n它们会作为草稿留在清单里，先不写进 dsh；完整的接口照常保存生效。\n' +
       '拉模型的入口在密钥弹窗里「从端点拉取模型列表」。\n\n继续保存吗？')) {
@@ -1377,8 +1056,8 @@ function save(restart, verify){
   // dsh 至少要有一条能写进配置的路由：启用 + 已存密钥。
   var usable = allTokens().filter(function(r){ return r.t.enabled && (r.t.hasKey || r.t._newKey); });
   if (!usable.length) {
-    out('至少要留一把「启用 + 已存密钥」的密钥。\n' +
-        '否则写出来的配置里一条路由都没有，dsh 直接起不来（dsh-set-provider 也会拒）。');
+    out('✗ 至少要留一把「启用 + 已存密钥」的密钥。\n' +
+        '否则写出来的配置里一条路由都没有，dsh 直接起不来。');
     return;
   }
 
@@ -1423,9 +1102,9 @@ function clearNewKeys(){
 function applyState(st){
   ST = st;
   var actv = st.active || {};
-  var prevOpen = OPEN, prevHL = HL;
-  // 用户填了、还没来得及保存的密钥值：服务器不知道它（清单里本来也不存明文密钥），
-  // 一次刷新就把它抹掉的话，弹窗里刚打的字就白打了。
+  var prevOpen = OPEN;
+  // 用户填了、还没来得及保存的密钥值：服务器不知道它（清单里不存明文），
+  // 一次刷新就抹掉的话，弹窗里刚打的字就白打了。
   var prevKey = {};
   allTokens().forEach(function(r){ if (r.t._newKey) prevKey[key(r.s.id, r.t.id)] = r.t._newKey; });
   DRAFT = {
@@ -1442,21 +1121,19 @@ function applyState(st){
   if (!DRAFT.active.site && DRAFT.sites.length && DRAFT.sites[0].tokens.length) {
     DRAFT.active = { site: DRAFT.sites[0].id, token: DRAFT.sites[0].tokens[0].id };
   }
-  OPEN = {}; HL = {};
+  OPEN = {};
   DRAFT.sites.forEach(function(s){
     // 接口这一级默认收起：展开的是用户自己点过的那些。
     OPEN[s.id] = !!prevOpen[s.id];
     s.tokens.forEach(function(t){
       var k = key(s.id, t.id);
       if (prevKey[k]) t._newKey = prevKey[k];
-      if (prevHL[k]) HL[k] = prevHL[k];
     });
   });
 
-  renderServices(st); renderPresets(st); renderList(); renderSub(st);
+  renderServices(st); renderPresets(st); renderList(); renderSub(st); renderCur(st);
   VER.cur = st.dshVersion || VER.cur;
 
-  // 生命周期入口的显隐：dsh 没装 → 安装向导；装着 → 修复；卸载脚本在场 → 卸载
   var missing = !!(st.dshMissing);
   document.getElementById('wizard').style.display = missing ? '' : 'none';
   document.getElementById('btnRepair').style.display = missing ? 'none' : '';
@@ -1465,17 +1142,8 @@ function applyState(st){
   document.getElementById('unAllWrap').style.display = canUn ? '' : 'none';
 
   renderVer(null);
-  var hint = '配置落在 profiles/{web,headless}/cordis.patch.yml，清单存 ' + st.paths.sites + '，已存密钥在 ' + st.paths.keys + '。';
-  if (st.migrated) hint = '（已从现有配置 / 旧账号清单读出，保存后会存进 ' + st.paths.sites + '）' + hint;
-  document.getElementById('savehint').textContent = hint;
-}
-
-function clearAll(){
-  if (!confirm('回到 DeepSeek 官方默认？会清掉所有接口配置（已存密钥不动）。')) return;
-  api('apply', {mode:'clear', restart:true}).then(function(j){
-    out((j.ok ? '✓ ' : '✗ ') + '已清空自定义后端\n\n' + (j.out || ''));
-    if (j.state) applyState(j.state);
-  });
+  document.getElementById('savehint').textContent =
+    '清单存 ' + st.paths.sites + '；已存密钥在服务环境里（' + st.paths.keys + '）。保存后会重启 dsh-web。';
 }
 
 /* ---------------------------------------------------------------- dsh 版本更新 */
@@ -1483,12 +1151,7 @@ function clearAll(){
 var VER = { cur:'', latest:'', tags:{}, channel:'latest', hasUpdate:false, patcher:true, flockOk:true };
 var UPD = { busy:false };   // 升级正在跑：这期间不许关弹窗
 
-/**
- * 粗比 semver —— 只要区分「这是升还是降」就够了。
- * 为什么需要：切到 alpha 通道时，远端可能**比本机还旧**（实测：本机 0.2.0-rc.2，
- * alpha 是 0.1.7-alpha.2）。这时按钮还写「更新到 0.1.7-alpha.2」会让人以为在升级。
- * prerelease 段按字符串比（'alpha.2' < 'rc.2'）—— 够用，不追求 semver 全精度。
- */
+/** 粗比 semver —— 只要区分「这是升还是降」就够了。 */
 function cmpVer(a, b){
   var A = String(a || '').replace(/^v/, '').split('-');
   var B = String(b || '').replace(/^v/, '').split('-');
@@ -1518,8 +1181,7 @@ function renderVer(j){
   document.getElementById('verDot').className = 'dot ' + (patcher ? 'ok' : 'no');
   document.getElementById('verNow').title = patcher
     ? '当前 dsh 版本。补丁器在位，这台设备可以直接升'
-    : '当前 dsh 版本。补丁器缺失（' + (flavor.share || 'share/dsh-ctl') + '/patches.py）——' +
-      'npm 升级会把 Termux 补丁一起冲掉，补不回来服务就起不来，所以这里不给升。先重跑 install-gateway.sh。';
+    : '补丁器缺失 —— npm 升级会把 Termux 补丁冲掉，先重跑 install-gateway.sh。';
 
   var chipNew = document.getElementById('verNew');
   var btn = document.getElementById('btnUpd');
@@ -1540,7 +1202,7 @@ function renderVer(j){
   }
 
   if (!patcher) { msg.textContent = '补丁器缺失，升级入口已禁用'; msg.style.color = 'var(--err)'; }
-  if (ST && ST.dshMissing) { msg.textContent = 'dsh 还没装 —— 在下面「安装 dsh」向导里选个通道开始'; msg.style.color = 'var(--warn)'; }
+  if (ST && ST.dshMissing) { msg.textContent = 'dsh 还没装 —— 在上面「安装 dsh」向导里选个通道开始'; msg.style.color = 'var(--warn)'; }
   else if (!flockOk) { msg.textContent = 'flock 原生插件缺失（升级时会自动现编）'; msg.style.color = 'var(--warn)'; }
   else if (VER.latest && !VER.hasUpdate) { msg.textContent = '已是最新'; msg.style.color = ''; }
   else if (!msg.textContent || msg.textContent === '已是最新') { msg.textContent = ''; msg.style.color = ''; }
@@ -1561,7 +1223,7 @@ function checkDsh(quiet){
     try { sessionStorage.setItem('dsh-ver-at', String(Date.now())); } catch (e) {}
     if (!quiet) {
       if (j.hasUpdate) out('发现新版本：' + j.current + ' → ' + j.latest +
-        '\nregistry ' + (j.registry || '?') + '，查询 ' + (j.ms || '?') + ' ms。点「更新到 ' + j.latest + '」走升级。');
+        '\n点「更新到 ' + j.latest + '」走升级。');
       else out('已是最新：' + (j.current || '?') + (j.latest ? '（远端 ' + j.latest + '）' : '') + (j.out ? '\n' + j.out : ''));
     }
     return j;
@@ -1620,8 +1282,7 @@ function openUpdModal(){
 }
 
 function closeUpdModal(){
-  // 用显式状态位，不认按钮上的文字 —— 之前就是靠 textContent === '执行中…' 判定，
-  // 结果跑完只把按钮 display:none 了、文字没换回来，弹窗再也关不掉。
+  // 用显式状态位，不认按钮上的文字。
   if (UPD.busy) return;
   document.getElementById('umodal').style.display = 'none';
 }
@@ -1648,25 +1309,18 @@ function doUpgrade(){
 
   var force = document.getElementById('uForce').checked;
   closeUpdModal();
-  // 长任务走 job 弹窗：现场日志 + 分步退出码实时滚，不再干等一个 promise
   openJobModal(verb + ' dsh → ' + ver,
     'npm 装新版 → 重打 Termux 补丁 → 重启 dsh-web' + (force ? '（强制重装）' : ''),
     function(){ return api('dshupgrade', { version: ver, channel: VER.channel, force: force }, true); });
 }
 
-/* ------------------------------------------------------- 生命周期任务：更新
- *
- * 更新是长任务（npm 装包几分钟起步），不能挂在一次 HTTP 请求里等。
- * 网关把它丢进后台 job，这里拿到 jobId 后轮询 /ctl/api/jobstatus：
- * 现场 160 行输出 + 每步退出码实时滚出来。
- */
+/* ------------------------------------------------------- 生命周期：长任务轮询 */
+
 var JT = { running:false, poll:null, cb:null, misses:0, missDeadline:0, missMs:30000, missHint:'' };
 
-/**
- * 打开任务弹窗并启动。fn() 必须返回 api() 的 promise（install / repair / dshupgrade / uninstall）。
+/** 打开任务弹窗并启动。fn() 必须返回 api() 的 promise。
  * opts.missMs：连续取不到现场多久判死（默认 30 秒 —— 网关可能正在重启）。
- * opts.missHint：判死时给的解释。卸载必须传：网关自己就是被删的对象，断连是预期行为。
- */
+ * opts.missHint：判死时给的解释。卸载必须传：网关自己就是被删的对象，断连是预期行为。 */
 function openJobModal(title, hint, fn, opts){
   opts = opts || {};
   JT = { running:false, poll:null, cb:opts.cb || null, misses:0, missDeadline:0,
@@ -1715,7 +1369,6 @@ function pollJob(){
       renderJob(j.job);
       if (j.job.status !== 'running') { finishJobModal(j.job.result || { ok:false, out:'任务已结束' }); return; }
     } else {
-      // 取不到现场：网关可能在重启（或在被卸载），给 missMs 缓冲再判死
       JT.misses++;
       if (!JT.missDeadline) JT.missDeadline = Date.now() + JT.missMs;
       if (Date.now() > JT.missDeadline) {
@@ -1729,7 +1382,7 @@ function pollJob(){
   });
 }
 
-/** 渲染现场快照：lines 全量重画（服务端已裁到 160 行，便宜），steps 用现成的 renderSteps。 */
+/** 渲染现场快照：lines 全量重画（服务端已裁到 160 行），steps 用现成的 renderSteps。 */
 function renderJob(job){
   var lines = job.lines || [];
   var log = document.getElementById('jLog');
@@ -1740,8 +1393,7 @@ function renderJob(job){
   }
   document.getElementById('jSteps').innerHTML = renderSteps(job.steps || []);
   document.getElementById('jWait').textContent =
-    '正在执行… 已等待 ' + (job.elapsedS || 0) + ' 秒。' +
-    '别关页面、别刷新。';
+    '正在执行… 已等待 ' + (job.elapsedS || 0) + ' 秒。别关页面、别刷新。';
 }
 
 /** 任务结束（完成或失败）：头部给结论，appUrl 给登录入口，state 落回面板。 */
@@ -1757,7 +1409,7 @@ function finishJobModal(result){
   var head = '<p style="color:var(--' + (r.ok ? 'ok' : 'err') + ');font-weight:600;margin:0 0 10px">' +
     (r.ok ? '✓ ' : '✗ ') + esc(first) + '</p>';
   if (r.ok && r.appUrl) {
-    head += '<p style="margin:0 0 10px"><a href="' + esc(r.appUrl) + '"><button class="primary">用令牌登录 dsh →</button></a></p>';
+    head += '<p style="margin:0 0 10px"><a href="' + esc(r.appUrl) + '"><button class="primary">打开 dsh →</button></a></p>';
   }
   var rest = String(r.out || '').split('\n').slice(1).join('\n');
   var stEl = document.getElementById('jSteps');
@@ -1776,12 +1428,7 @@ function closeJobModal(){
   document.getElementById('jmodal').style.display = 'none';
 }
 
-/* ------------------------------------------------------- 生命周期：安装 / 修复 / 卸载
- *
- * 三个入口都走同一个 job 弹窗（openJobModal）：网关把它们丢进后台 job，
- * 这里轮询 /ctl/api/jobstatus 看现场。安装是 dsh 没装时的向导；
- * 修复 / 卸载是装好之后服务卡上的常规按钮。
- */
+/* ------------------------------------------------------- 生命周期：安装 / 修复 / 卸载 */
 
 /** 向导通道切换：把该通道的远端版本填进版本框（没查过远端就留空 = 按通道取）。 */
 function wChanChange(){
@@ -1800,7 +1447,7 @@ function wVerEdited(){
 function doInstall(){
   var ver = (document.getElementById('wVer').value || '').trim();
   var chan = document.getElementById('wChan').value;
-  if (ver && !/^\d+\.\d+\.\d+/.test(ver)) { out('版本号看起来不像 semver：' + ver + '（留空则按通道取）'); return; }
+  if (ver && !/^\d+\.\d+\.\d+/.test(ver)) { out('✗ 版本号看起来不像 semver：' + ver + '（留空则按通道取）'); return; }
   openJobModal('安装 dsh' + (ver ? ' ' + ver : '（通道 ' + chan + '）'),
     'npm 装包 → 重打 Termux 补丁 → 起 dsh-web',
     function(){ return api('install', { version: ver, channel: chan }, true); });
@@ -1813,11 +1460,8 @@ function doRepair(){
     function(){ return api('repair', {}, true); });
 }
 
-/**
- * 卸载：网关自己就是被删的对象 —— sv down dsh-ctl 会把它杀掉，面板轮询必然断连。
- * 这不是故障：弹窗给 3 分钟缓冲 + 一句「网关正被卸载」的解释；真正的结果在
- * 设备上的 $TMPDIR/dsh-uninstall.log 里。
- */
+/** 卸载：网关自己就是被删的对象 —— sv down dsh-ctl 会把它杀掉，面板轮询必然断连。
+ * 这不是故障：弹窗给 3 分钟缓冲 + 一句「网关正被卸载」的解释。 */
 function doUninstall(){
   var all = document.getElementById('unAll').checked;
   var msg = all
@@ -1830,7 +1474,7 @@ function doUninstall(){
     { missMs: 180000, missHint: '取不到任务状态已 3 分钟 —— 多半因为网关自己就是被卸载的对象（被 sv down 杀掉了），这不代表失败。回设备确认结果：$TMPDIR/dsh-uninstall.log' });
 }
 
-/* ---------------------------------------------------------------- 其它 */
+/* ---------------------------------------------------------------- 入口 */
 
 function load(){
   busy(true, 'state');
@@ -1838,44 +1482,20 @@ function load(){
     busy(false);
     if (!st.ok) { out(st.out || JSON.stringify(st)); return; }
     applyState(st);
-    out('状态已刷新。');
   });
 }
 
-function act(name){
-  api(name, {}).then(function(j){
-    if (j.state) applyState(j.state);
-    out((j.ok ? '✓ ' : '✗ ') + name + '\n\n' + (j.out || ''));
-  });
-}
 function showLog(name){
   api('log', {name:name, lines:80}).then(function(j){ out('$ 日志 ' + name + '\n\n' + (j.out || '')); });
 }
-/* 旧版那张「凭据总览」卡片已去掉：写入密钥在各把密钥的展开区里做，
-   清除走展开区那一行的「清除已存密钥」。saveKey / clearKey 随之删除。 */
 
 load().then(function(){
-  // 自动检测一次，但 60 秒内不重复 —— 聚合站的 /models 很容易被限流（实测撞过 429），
-  // 刷新页面就重打一遍只会让情况更糟。想立刻重测点接口行尾的「检测」。
-  var last = 0;
-  try { last = Number(sessionStorage.getItem('dsh-hl-at') || 0) } catch (e) {}
-  if (Date.now() - last > 60000) {
-    try { sessionStorage.setItem('dsh-hl-at', String(Date.now())) } catch (e) {}
-    // 连输出面板都不动：把当前那句原样留着，探测只改「健康」列。
-    var keep = document.getElementById('out').textContent;
-    healthAll(true).then(function(){ document.getElementById('out').textContent = keep; });
-  } else {
-    out('状态已就绪。健康检测 60 秒内不重复；要立刻重测就点对应接口行尾的「检测」。');
-  }
-
-  // 顺带对一次 dsh 版本（5 分钟内不重复）。这次同样不碰输出面板 ——
-  // 它只干一件事：该亮的时候把「远端 x.y.z / 更新到 …」亮出来。
-  // 想现在就知道结果，点版本行那个「检查更新」。
+  // 顺带对一次 dsh 版本（5 分钟内不重复）—— 只为该亮的时候把「更新到 …」亮出来。
   var vat = 0;
   try { vat = Number(sessionStorage.getItem('dsh-ver-at') || 0) } catch (e) {}
   if (Date.now() - vat > 300000) {
-    var keep2 = document.getElementById('out').textContent;
-    checkDsh(true).then(function(){ document.getElementById('out').textContent = keep2; });
+    var keep = document.getElementById('out').textContent;
+    checkDsh(true).then(function(){ document.getElementById('out').textContent = keep; });
   }
 });
 </script>

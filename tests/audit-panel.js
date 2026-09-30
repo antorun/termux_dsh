@@ -62,30 +62,36 @@ for (const [name, pat] of [
   console.log('旧术语残留 ' + name + ': ' + c + (c ? ' ✗' : ' ✓'))
 }
 
-// 7d) 两层结构：接口（接口地址）→ 展开才是密钥列表 → 最下边「＋ 增加密钥」
-//     密钥那一级没有第三层：行里不再有 ▸，行尾「编辑」开单把密钥的弹窗，「删除」直接移除这把。
+// 7d) 两层结构：接口（接口地址）→ 行尾「＋ 增加密钥」「编辑」；点行展开密钥列表。
+//     密钥那一级没有第三层：行里不再有 ▸，行尾「编辑」开单把密钥的弹窗，「删」直接移除这把。
+//     2026-09-30 晚深度精简：健康探测整条删了（HL/healthOne/healthApi），要查密钥好使
+//     就保存时勾「保存后自检」或去密钥弹窗「从端点拉取模型列表」。
 for (const [name, pat, want] of [
   ['接口行 .arow', /class="arow/, 1],
   ['密钥行 .krow', /class="krow/, 1],
   ['接口展开容器 data-adet', /data-adet=/, 1],
   ['接口行展开入口 toggleApi(', /toggleApi\(/, 2],
-  ['「＋ 增加密钥」在展开区里', /class="kadd"/, 1],
+  ['接口行里有「＋ 增加密钥」按钮（addKeyHere）', /addKeyHere\(/, 2],
   ['增加密钥按接口加（addKeyTo）', /addKeyTo\(/, 2],
   ['「＋ 新增接口」按钮在列表下部', /id="btnAddApi"/, 1],
   ['新增接口走弹窗 openApiModal', /openApiModal\(/, 3],
-  ['接口行尾部有「编辑」按钮', /data-aedit=/, 1],
-  ['接口行尾部有「检测」按钮', /data-ahealth=/, 1],
-  ['接口级检测 healthApi（定义+调用）', /healthApi\(/, 2],
-  ['已去掉「全部检测」按钮', /onclick="healthAll\(\)"|全部检测/, 0],
-  ['密钥行尾部有「编辑」按钮', /data-kedit=/, 1],
-  ['密钥行尾部有「删除」按钮', /data-kdel=/, 1],
-  ['密钥行尾是操作列 .kact/.c-act', /class="c-act"/, 1],
+  ['接口行尾部有「编辑」按钮（stopPropagation + openApiModal）', /stopPropagation\(\);openApiModal\(/, 1],
+  ['密钥行尾部有「编辑」按钮', /onclick="openKeyModal\(/, 1],
+  ['密钥行尾部有「删」按钮', /onclick="delToken\(/, 1],
+  ['密钥行尾是操作列 .k-act', /class="k-act"/, 1],
+  ['健康探测已删（healthOne）', /healthOne\(/, 0],
+  ['健康探测已删（healthApi）', /healthApi\(/, 0],
+  ['健康探测已删（HL 状态表）', /HL\[|var HL/, 0],
+  ['接口级「检测」按钮已删（data-ahealth）', /data-ahealth=/, 0],
+  ['弹窗里「检测」按钮已删（data-mhint）', /data-mhint=/, 0],
   ['密钥行没有二级展开（无 OPENK/箭头/详情容器）', /OPENK|data-kchev|data-kdet=/, 0],
   ['旧的常驻表单已删', /id="newsite"/, 0],
   ['旧的站点下拉已删', /id="siteSel"/, 0],
   ['旧的行式表格类名已清', /class="trow|class="tdet/, 0],
   ['旧的接口信息条 .abar 已删', /class="abar"/, 0],
   ['密钥的旧「换接口挂」已删', /function moveTo\(|toggleOpen\(/, 0],
+  ['「清空配置」入口已删（clearAll / apply mode:clear）', /clearAll|mode:'clear'/, 0],
+  ['候选模型批操作已删（candAll/candNone/copyModels）', /candAll\(|candNone\(|copyModels\(/, 0],
 ]) {
   const c = (s.match(new RegExp(pat.source, 'g')) || []).length
   const good = want === 0 ? c === 0 : c >= want
@@ -119,15 +125,11 @@ for (const [name, pat, want] of [
   console.log('弹窗 ' + name + ': ' + c + (c >= want || want === 0 && c === 0 ? ' ✓' : ' ✗ 期望 ' + (want === 0 ? '0' : '≥' + want)))
 }
 
-// 7c) 健康探测的节流/重试机制
+// 7c) 节流/状态保持机制（健康探测已全删，这里只留与精简版有关的）
 for (const [name, pat, want] of [
   ['详情默认收起（没有 total<=1 自动展开）', /total\s*<=\s*1/, 0],
-  ['20 秒内不重测（RETEST_MS）', /RETEST_MS/, 1],
-  ['429 退避重试（HL_MAX_TRY）', /HL_MAX_TRY/, 1],
-  ['全部检测是串行（无并发三路）', /Promise\.all\(\[next\(\), next\(\), next\(\)\]\)/, 0],
-  ['手动「检测」强制真打（force=true）', /healthOne\(' \+ sid \+ ',' \+ tid \+ '\)|,false,true\)/, 1],
-  // 弹窗盖着输出面板，检测结果得有地方显示
-  ['弹窗里有健康徽章（data-mhint）', /data-mhint=/, 2],
+  ['健康探测的节流常量已删（RETEST_MS）', /RETEST_MS/, 0],
+  ['429 退避重试已删（HL_MAX_TRY）', /HL_MAX_TRY/, 0],
   ['保存成功后清掉明文密钥值', /clearNewKeys\(/, 2],
   ['刷新不吞掉还没保存的密钥值', /prevKey\[k\]/, 1],
   // 「同一时间只有一把启用」：启用位只有一个入口 onlyEnable()，
@@ -135,6 +137,7 @@ for (const [name, pat, want] of [
   ['启用位唯一入口 onlyEnable（定义+调用）', /onlyEnable\(/, 3],
   ['没有「全部启用/全部停用」按钮', /setAllEnabled|全部启用|全部停用/, 0],
   ['没有直接写 enabled = true 的地方', /\.enabled\s*=\s*true/, 0],
+  ['加载时不再自动探测（healthAll 调用已删）', /healthAll\(/, 0],
 ]) {
   const c = (s.match(new RegExp(pat.source, 'g')) || []).length
   const good = want === 0 ? c === 0 : c >= want
@@ -204,20 +207,18 @@ for (const [name, pat, want] of [
   console.log('生命周期 ' + name + ': ' + c + (good ? ' ✓' : ' ✗ 期望 ' + (want === 0 ? '0' : '≥' + want)))
 }
 
-// 8) 需要存在的字样
-const must = ['接口列表', '新增接口', '增加密钥', 'id="modal"', 'persistManifest', 'draftPayload',
-  '同一时间只有一把', '健康', '显示名', '环境变量名', '接口地址', '当前生效', '已写入 dsh', '编辑接口',
-  '安装 dsh', '开始安装', '修复（重打补丁）', '卸载']
+// 8) 需要存在的字样（2026-09-30 晚精简后：主页三块 + 大按钮）
+const must = ['接口与密钥', '新增接口', '增加密钥', 'id="modal"', 'persistManifest', 'draftPayload',
+  '同一时间只有一把', '显示名', '环境变量名', '接口地址', '当前生效', '已写入 dsh', '编辑接口',
+  '安装 dsh', '开始安装', '修复（重打补丁）', '卸载', '保存并生效', '打开 dsh 主界面', '从端点拉取模型列表']
 const lost = must.filter((x) => !s.includes(x))
 console.log('必须在的字样 ' + must.length + ' 个，' + (lost.length ? '✗ 缺: ' + lost.join(',') : '✓ 齐全'))
 
-// 8b) 「接口列表」卡片下面不再挂长段说明文字（用户嫌太长，2026-09-30 让删掉）。
-//     结构断言：<h2>接口列表</h2> 和表头 .ahead 之间不许出现 <p>。
-//     文字断言：那段话的几个特征串不许回来 —— 换个措辞重写也会被结构断言抓住。
+// 8b) 「接口与密钥」卡片标题与列表之间不许塞长段说明（用户嫌繁琐，2026-09-30 删过一轮）。
 {
-  const gap = s.match(/<h2>接口列表<\/h2>([\s\S]{0,200}?)<div class="ahead">/)
+  const gap = s.match(/<h2>接口与密钥<\/h2>([\s\S]{0,200}?)<div id="list">/)
   const noP = !!gap && !/<\s*p[\s>]/.test(gap[1])
-  console.log('接口列表卡片下无说明段（h2 后直接接表头）: ' + (noP ? '✓' : '✗ 期望 h2 与 .ahead 之间没有 <p>'))
+  console.log('接口卡片下无说明段（h2 后直接接列表）: ' + (noP ? '✓' : '✗ 期望 h2 与 #list 之间没有 <p>'))
   for (const [name, pat] of [
     ['卡片说明「一行一个接口」', /一行一个<b>接口<\/b>/],
     ['卡片说明「不能证明密钥有效」', /不能证明密钥有效/],
@@ -231,7 +232,7 @@ console.log('必须在的字样 ' + must.length + ' 个，' + (lost.length ? '�
 // 9) 局部变量遮蔽了函数名（createSite 里 var key、setTok 里 var el 各炸过一次）
 const sha = []
 const fns = new Set(defs.concat(['api', 'out', 'esc', 'busy', 'renderList', 'tokenName',
-  'key', 'el', 'enabledTok', 'apiRowHtml', 'apiDetHtml', 'keyRowHtml', 'keyDetHtml']))
+  'key', 'el', 'enabledTok', 'apiRowHtml', 'keyRowHtml', 'keyModalHtml']))
 for (const mm of js.matchAll(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=/g)) {
   if (fns.has(mm[1])) sha.push(mm[1])
 }

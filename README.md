@@ -160,11 +160,11 @@ bash uninstall.sh -y --all    # 全拆：连 dsh 包 / 用户数据 / 工作目�
 # 面板静态自检（语法 / 函数遮蔽 / onclick 与 id 引用 / 已删元素残留）
 node tests/audit-panel.js share/dsh-ctl/panel.html       # 期望 ✗ = 0
 
-# 假后端预览：只读，state/health/models 全是假数据，不碰设备
+# 假后端预览：只读，state/models 全是假数据，不碰设备
 node tests/preview-panel.js            # http://127.0.0.1:8877
 
-# 真浏览器交互断言（headless chromium 驱动假后端）
-node tests/test-panel-ui.js            # 期望「失败 0 项」（当前 135 项）
+# 面板渲染与交互断言（node 假 DOM：applyState / 渲染 / 切启用互斥 / 密钥弹窗 / save 打点）
+node tests/panel-render-check.js                          # 期望 ALL PASS（21 项）
 
 # 设备上：验证「改配置是否需要重启」
 bash $PREFIX/bin/verify-hot-reload.sh
@@ -177,9 +177,9 @@ bash tests/test-uninstall.sh          # 期望「失败 0 项」（67 项断言�
 bash tests/test-gateway.sh            # 期望「失败 0 项」（75 项断言，约 20 秒）
 ```
 
-`test-panel-ui.js` 需要浏览器：装了 `playwright` 包就直接跑；只装 `playwright-core` 时用
-`CHROME_PATH=/path/to/chrome` 指定，或让它自己扫 `~/Library/Caches/ms-playwright`（macOS）/
-`~/.cache/ms-playwright`（Linux）。
+浏览器交互级的 `test-panel-ui.js`（playwright，135 项）在 2026-09-30 面板深度精简时
+退役——它的断言绑着旧 DOM 结构，node 假 DOM 的 `panel-render-check.js` 覆盖同样的
+路径（渲染 / 互斥启用 / 弹窗 / save 打点）且不需要浏览器。
 
 ---
 
