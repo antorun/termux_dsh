@@ -36,7 +36,8 @@ PAYLOADS = {
     'dsh-ctl-run':        'runit/dsh-ctl-run',                # -> $SVDIR/dsh-ctl/run
 }
 
-head = (HERE / 'install-gateway.head.sh').read_text()
+# 显式 utf-8：Windows 上 read_text 默认按终端 locale（GBK）解码中文 payload 会炸
+head = (HERE / 'install-gateway.head.sh').read_text(encoding='utf-8')
 for key, rel in PAYLOADS.items():
     src = ROOT / rel
     assert src.is_file(), '缺文件: ' + str(src)
@@ -51,5 +52,7 @@ if leftover:
     raise SystemExit(f'还有没替换的占位符: {leftover}')
 
 out = HERE / 'install-gateway.sh'
-out.write_text(head)
+# 写字节：在 Windows 上 write_text 会把 \n 翻成 \r\n，生成的安装器拿到 bash 里
+# 就满屏 $'\r': command not found（3.7 的 write_text 还没有 newline= 参数）
+out.write_bytes(head.encode('utf-8'))
 print(f'已生成 {out} ({len(head)} bytes, {len(PAYLOADS)} 个 payload)')
