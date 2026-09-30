@@ -72,9 +72,19 @@ const FLOCK_NATIVE = DSH_DIR + '/node_modules/@deepseek-ai/node-addon-system-and
 const NPM_BIN = BIN + '/npm'
 const NPM_UPGRADE_TIMEOUT = 900000   // 15 分钟：Termux 上装 300MB 级的包，别急着判死
 
+/* 网关自己下发的设备端脚本（由 install-gateway.sh 落到 share/dsh-ctl/）。
+ * 安装 / 修补 / 卸载三条流程都要它们在场，缺了就是网关没装全，控制台相应入口禁用。 */
+const BOOTSTRAP_TOKEN = SHARE + '/.bootstrap-token'   // dsh 还没装时的唯一控制台入口令牌
+const UNINSTALL_SH = SHARE + '/uninstall.sh'
+const INSTALL_WEB_SERVICE_SH = SHARE + '/install-web-service.sh'
+const UNINSTALL_LOG = TMPDIR + '/dsh-uninstall.log'
+
 const CHILD_ENV = Object.assign({}, process.env, {
   PREFIX,
   DSH_HOME,
+  // sv 命令靠 SVDIR 找服务目录；网关进程是从 runit 起的，未必继承到它
+  // （非交互 shell / SSH 环境经常没有），缺了的话 sv status 全报「未运行」。
+  SVDIR,
   PATH: BIN + ':' + BIN + '/applets:' + (process.env.PATH || ''),
 })
 
@@ -553,118 +563,308 @@ async function apiDshCheck(body) {
  *
  * 回滚用**改名**而不是复制：305MB 的目录 `mv` 是瞬时的，`cp -a` 要几十秒。
  * 备份放在同一父目录下（同一文件系统），失败时删掉装坏的再改回来即可。
+ *//**
+ * dsh 生命周期的共用引擎：装包 → 重打 JS 补丁 → 局域网补丁 → flock → 起服务 → 验证。
+ *
+ * 三个入口共用这一条链：
+ *   install    （dsh 还没有）   isRepair=false，before=''
+ *   dshupgrade （换版本）       isRepair=false，before=旧版 → 先改名备份，装失败回滚
+ *   repair     （包在但坏了）   isRepair=true  → 不走 npm（包没换），只补补丁 + 起服务
+ *
+ * 为什么装/升级之后必须重打补丁：`@deepseek-ai/dsh` 是为 glibc Linux/macOS 构建的，
+ * Termux（Android/bionic）上有几处硬不兼容（见 patches.py 顶部）。补丁直接改
+ * node_modules 里的源码，而 `npm install -g` 会把整个包目录换成官方版 ——
+ * 补丁全丢、flock 那个本地编译的 .node 也没了。装完不补 = 服务起不来。
+ *
+ * 回滚用**改名**而不是复制：305MB 的目录 `mv` 是瞬时的，`cp -a` 要几十秒。
+ * 备份放在同一父目录下（同一文件系统），失败时删掉装坏的再改回来即可。
+ *
+ * 全程往 job 里推输出（runStream 逐行实时），面板轮询 /ctl/api/jobstatus 看进度。
  */
-async function apiDshUpgrade(body) {
-  const steps = []
+async function provisionDsh(job, want, isRepair) {
   const before = installedVersion()
-  const channel = pickChannel(body && body.channel)
-  const forced = !!(body && body.force)
 
-  if (!fs.existsSync(PATCHER)) {
-    return { ok: false, out: '补丁器缺失：' + PATCHER + '\n它随 install-ctl.sh 一起装到设备；缺了就没法在升级后把补丁补回来，为免升级后起不来，这里直接不动手。' }
-  }
-
-  const r = await fetchDistTags(20000)
-  const want = clean(body && body.version, 64) || (r.ok ? String(r.tags[channel] || '') : '')
-  if (!want) {
-    return { ok: false, out: '拿不到目标版本号（远端查不到，也没手动指定）。' + (r.ok ? '' : (r.tried || []).join('；')) }
-  }
-  if (before === want && !forced) {
-    return { ok: false, out: '现在装的就是 ' + want + '。要原地重装请勾「强制重装」。', current: before }
-  }
-  if (!/^\d+\.\d+\.\d+/.test(want)) return { ok: false, out: '版本号看起来不对：' + want }
-
-  const bak = DSH_SCOPE + '.bak-' + Date.now()
-  let renamed = false
-  let npmOk = false
-
-  // 1) 备份：把整个 scope 目录改名挪走（瞬时）
-  try {
-    fs.renameSync(DSH_SCOPE, bak)
-    renamed = true
-    steps.push({ cmd: 'mv ' + DSH_SCOPE + ' ' + bak, code: 0, out: '(瞬时的改名备份，' + before + ')' })
-  } catch (e) {
-    return { ok: false, out: '备份失败，没敢继续：' + e.message }
-  }
-
-  const rollback = async (why) => {
-    const rb = []
+  if (!isRepair) {
+    // 1) 备份：把整个 scope 目录改名挪走（瞬时）。修复不挪：包没换，没必要冒险动它。
+    const bak = DSH_SCOPE + '.bak-' + Date.now()
+    let renamed = false
     try {
+      if (fs.existsSync(DSH_SCOPE)) {
+        fs.renameSync(DSH_SCOPE, bak)
+        renamed = true
+        jobLine(job, '◆ 备份 ' + DSH_SCOPE + ' → ' + bak + '（瞬时改名；装失败可退回 ' + before + '）')
+      }
+    } catch (e) {
+      return { ok: false, out: '备份失败，没敢继续：' + e.message }
+    }
+
+    // 2) 装新版。这一步单独带编译标志：0.2.0+ 的 koffi 要现编，而 bionic 上
+    //    statx() 必须 -D_GNU_SOURCE + API>=30 才可见（见 NPM_BUILD_ENV 那段注释）。
+    const nr = await runStream(job, NPM_BIN, ['install', '-g', DSH_PKG + '@' + want],
+      { timeoutMs: NPM_UPGRADE_TIMEOUT, env: NPM_BUILD_ENV })
+    const nowVer = installedVersion()
+    if (nr.code !== 0 || nowVer !== want) {
+      // 回滚：删掉装坏的，把备份改回来，重启服务
       if (fs.existsSync(DSH_SCOPE)) fs.rmSync(DSH_SCOPE, { recursive: true, force: true })
       if (renamed && fs.existsSync(bak)) fs.renameSync(bak, DSH_SCOPE)
-      rb.push({ cmd: '回滚到 ' + before, code: 0, out: '已把备份改回 ' + DSH_SCOPE })
-    } catch (e) {
-      rb.push({ cmd: '回滚', code: 1, out: '回滚也失败了：' + e.message + '\n备份还在 ' + bak })
+      await runStream(job, BIN + '/sv', ['restart', 'dsh-web'], { timeoutMs: 30000 })
+      await sleep(4000)
+      await runStream(job, BIN + '/sv', ['status', 'dsh-web'], { timeoutMs: 10000 })
+      return {
+        ok: false,
+        out: '装 ' + want + ' 这一步没成（npm 退出码 ' + nr.code + '，落盘版本 ' + (nowVer || '读不到') +
+          '）。已自动回滚到 ' + before + '。',
+        rolledBack: true, from: before, to: want, state: await buildState(),
+      }
     }
-    const rr = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
-    await sleep(4000)
-    const sr = await runFile(BIN + '/sv', ['status', 'dsh-web'], 10000)
-    rb.push({ cmd: 'sv restart dsh-web', code: rr.code, out: sr.out })
-    return { ok: false, out: why + '\n\n已自动回滚。', steps: steps.concat(rb), rolledBack: true, current: installedVersion(), state: await buildState() }
   }
-
-  // 2) 装新版
-  // 装包这一步单独带编译标志：0.2.0+ 的 koffi 要现编，而 bionic 上 statx() 必须
-  // 同时有 -D_GNU_SOURCE 和 API>=30 才可见（见 NPM_BUILD_ENV 那段注释）。
-  const nr = await runFile(NPM_BIN, ['install', '-g', DSH_PKG + '@' + want], NPM_UPGRADE_TIMEOUT, NPM_BUILD_ENV)
-  steps.push({
-    cmd: 'npm install -g ' + DSH_PKG + '@' + want,
-    code: nr.code,
-    out: clipTail(nr.out, 4000),
-  })
-  const nowVer = installedVersion()
-  if (nr.code !== 0 || nowVer !== want) {
-    return await rollback('装 ' + want + ' 这一步没成（npm 退出码 ' + nr.code + '，落盘版本 ' + (nowVer || '读不到') + '）。')
-  }
-  npmOk = true
 
   // 3) 重打 JS 补丁 —— 补丁器自己的退出码就是判据（0 全成 / 1 有补丁没打成 / 2 环境问题）
-  const pr = await runFile(BIN + '/python3', [PATCHER], 180000)
-  steps.push({ cmd: 'python3 patches.py', code: pr.code, out: clipTail(pr.out, 6000) })
+  const pr = await runStream(job, BIN + '/python3', [PATCHER], { timeoutMs: 180000 })
   if (pr.code !== 0) {
-    return await rollback('新版本的源码跟补丁对不上了（patches.py 退出码 ' + pr.code +
-      '）。上游很可能改了被补丁的那几个文件，硬留着会起不来。')
-  }
-
-  // 4) flock 原生插件：npm 重装会把它冲掉，缺了就现编
-  let flockNote = ''
-  if (!flockNativeOk()) {
-    if (fs.existsSync(FLOCK_BUILD)) {
-      const br = await runFile(BIN + '/bash', [FLOCK_BUILD], 600000)
-      steps.push({ cmd: 'build-flock.sh', code: br.code, out: clipTail(br.out, 3000) })
-      flockNote = flockNativeOk() ? '已重新编译 ✓' : '编译后仍然缺失 ✗'
-    } else {
-      flockNote = '编译脚本缺失（' + FLOCK_BUILD + '），没编'
+    return {
+      ok: false,
+      out: '补丁没全打好（patches.py 退出码 ' + pr.code + '）。上游可能改了被补丁的那几个文件。\n' +
+        (isRepair
+          ? 'dsh 包没换，服务可能还活着；但最好查一下日志再用了。'
+          : '装坏的包还在（补丁只打了一半），需要手动处理或卸载后重装。'),
+      from: before, to: want, state: await buildState(),
     }
-  } else {
-    flockNote = '不需要（新包装完就带着可用的 .node）'
   }
 
-  // 5) 重启 + 验证
-  const rr = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
-  await sleep(4000)
-  const sr = await runFile(BIN + '/sv', ['status', 'dsh-web'], 10000)
-  steps.push({ cmd: 'sv restart dsh-web', code: rr.code, out: sr.out })
-  const up = /^run:/.test(String(sr.out || '').trim())
+  // 4) 局域网设置补丁（非致命：它只是让 LAN 下「设置」页可用，不成服务也能跑）
+  const lr = await runStream(job, BIN + '/dsh-patch-lan-settings', [], { timeoutMs: 60000 })
+  if (lr.code !== 0) {
+    jobLine(job, '⚠ dsh-patch-lan-settings 没成（非致命，继续）：' +
+      String(lr.out || '').trim().split('\n')[0])
+  }
+
+  // 5) flock 原生插件：npm 重装会把它冲掉，缺了就现编
+  if (!flockNativeOk() && fs.existsSync(FLOCK_BUILD)) {
+    await runStream(job, BIN + '/bash', [FLOCK_BUILD], { timeoutMs: 600000 })
+  }
+
+  // 6) 起服务：dsh-web 的 runit 目录在位就 restart，不在就跑 install-web-service.sh 建出来
+  const svcExisted = fs.existsSync(SVD)
+  if (!svcExisted) {
+    const ir = await runStream(job, BIN + '/bash', [INSTALL_WEB_SERVICE_SH], { timeoutMs: 300000 })
+    if (ir.code !== 0) {
+      return {
+        ok: false,
+        out: '建 dsh-web 服务目录失败（install-web-service.sh 退出码 ' + ir.code + '）。',
+        from: before, to: want, state: await buildState(),
+      }
+    }
+  }
+  const act = svcExisted ? 'restart' : 'up'
+  let up = false
+  for (let i = 0; i < 8 && !up; i++) {
+    if (i) await sleep(2500)
+    await runStream(job, BIN + '/sv', [act, 'dsh-web'], { timeoutMs: 30000 })
+    await sleep(2500)
+    const sr = await runStream(job, BIN + '/sv', ['status', 'dsh-web'], { timeoutMs: 10000 })
+    up = /^run:/.test(String(sr.out || '').trim())
+    if (!up) jobLine(job, '⚠ sv ' + act + ' dsh-web 后还不是 run:，重试 ' + (i + 1) + '/8')
+  }
   if (!up) {
-    return await rollback('新版本 ' + want + ' 装上了、补丁也打了，但 dsh-web 起不来：\n' + String(sr.out || '').trim())
+    return {
+      ok: false,
+      out: '服务起不来（sv status 不是 run:）。补丁已打，dsh-web 需要手动排查：看 $PREFIX/var/log/sv/dsh-web/current。',
+      from: before, to: want, state: await buildState(),
+    }
+  }
+  if (!(await waitUp(UP_HOST, UP_PORT, 120000))) {
+    return {
+      ok: false,
+      out: 'sv 显示 run: 但端口 ' + UP_PORT + ' 不应答。服务可能还在启动，等一会儿再试「修复」。',
+      from: before, to: want, state: await buildState(),
+    }
   }
 
+  // 7) 取令牌 + 版本，拼出可直接点的登录链接
+  let tokenUrl = ''
+  for (let i = 0; i < 10 && !tokenUrl; i++) {
+    if (i) await sleep(2000)
+    tokenUrl = await readToken()
+  }
   const ver = await readVersion()
-  // 备份先留着：这次是人工点确认的升级，出事要能立刻退回去。等下次升级再清上一份。
-  steps.push({ cmd: 'dsh --version', code: 0, out: ver })
-  steps.push({ cmd: '备份', code: 0, out: bak + '（留着，确认新版没问题后可手动删）' })
+  jobLine(job, '✓ dsh --version → ' + ver)
+  const tokPart = /token=([A-Za-z0-9_-]+)/.exec(tokenUrl)
+  const ip = lanIp()
+  const appUrl = ip && tokPart ? 'http://' + ip + ':' + LISTEN_PORT + '/app?token=' + tokPart[1] : ''
 
   return {
     ok: true,
-    out: '已从 ' + before + ' 升到 ' + want + '，补丁已重打，dsh-web 已重启。\nflock 原生插件：' + flockNote,
-    from: before,
-    to: want,
-    npmOk,
-    steps,
-    state: await buildState(),
+    out: (isRepair ? '修复完成：补丁已重打，dsh-web 已重启并验证。' :
+        '已从 ' + (before || '无') + ' 装到 ' + want + '，补丁已重打，dsh-web 已重启并验证。') +
+      (appUrl ? '\n登录链接（点开就直接进 dsh 主界面）：' + appUrl : ''),
+    from: before, to: want, state: await buildState(), appUrl,
   }
 }
+
+/**
+ * 把长任务丢到后台跑：API 立刻返回 jobId，面板轮询 /ctl/api/jobstatus 看现场。
+ * 同一时间只允许一个任务（startJob 里已经拦截并发）。
+ */
+function startLifecycleJob(kind, title, run) {
+  const started = startJob(kind, title)
+  if (!started.ok) return started
+  const job = started.job
+  ;(async () => {
+    try {
+      finishJob(job, await run(job))
+    } catch (e) {
+      finishJob(job, { ok: false, out: '任务炸了：' + String((e && e.stack) || e) })
+    }
+  })()
+  return { ok: true, jobId: job.id, job: jobSnapshot() }
+}
+
+/**
+ * 更新 dsh：校验入参 → 后台跑 provisionDsh。
+ * 面板拿 jobId 轮询 jobstatus，弹窗里实时滚日志。
+ */
+async function apiDshUpgrade(body) {
+  if (!fs.existsSync(PATCHER)) {
+    return { ok: false, out: '补丁器缺失：' + PATCHER + '\n它随网关一起装到设备；缺了就没法在升级后把补丁补回来 —— 为免升级后起不来，这里直接不动手。' }
+  }
+  const before = installedVersion()
+  if (!before) {
+    return { ok: false, out: 'dsh 还没装（读不到 ' + DSH_PKG_JSON + '）。\n这一趟请用「继续安装」。' }
+  }
+
+  const channel = pickChannel(body && body.channel)
+  const forced = !!(body && body.force)
+  const want0 = clean(body && body.version, 64)
+  const r = await fetchDistTags(20000)
+  const want = want0 || (r.ok ? String(r.tags[channel] || '') : '')
+  if (!want) {
+    return { ok: false, out: '拿不到目标版本号（远端查不到，也没手动指定）。' + (r.ok ? '' : (r.tried || []).join('；')) }
+  }
+  if (!/^\d+\.\d+\.\d+/.test(want)) return { ok: false, out: '版本号看起来不对：' + want }
+  if (before === want && !forced) {
+    return { ok: false, out: '现在装的就是 ' + want + '。要原地重跑一遍，请走「修复」（不换包，只重打补丁）。', current: before }
+  }
+
+  return startLifecycleJob('dshupgrade', '更新 dsh → ' + want,
+    (job) => provisionDsh(job, want, false))
+}
+
+/**
+ * 安装 dsh（网关优先流程的后一半）：dsh 本体不存在时，从控制台第一趟装。
+ * 版本选择：手填 > 通道默认（默认 latest）。
+ */
+async function apiInstall(body) {
+  if (fs.existsSync(DSH_PKG_JSON)) {
+    return { ok: false, out: 'dsh 已经装了（' + installedVersion() + '）。要换版本用「更新」，坏了用「修复」。' }
+  }
+  if (!fs.existsSync(NPM_BIN)) {
+    return { ok: false, out: '没有 npm（' + NPM_BIN + '）。先在 Termux 里 pkg install nodejs 再来。' }
+  }
+  if (!fs.existsSync(PATCHER)) return { ok: false, out: '补丁器缺失：' + PATCHER }
+  if (!fs.existsSync(INSTALL_WEB_SERVICE_SH)) {
+    return { ok: false, out: '服务安装脚本缺失：' + INSTALL_WEB_SERVICE_SH }
+  }
+
+  const channel = pickChannel(body && body.channel)
+  const want0 = clean(body && body.version, 64)
+  let want = want0
+  if (!want) {
+    const r = await fetchDistTags(20000)
+    want = r.ok ? String(r.tags[channel] || r.tags.latest || '') : ''
+    if (!want) {
+      return { ok: false, out: '拿不到要装的版本号（远端查不到，也没手动指定）。' + (r.ok ? '' : (r.tried || []).join('；')) }
+    }
+  }
+  if (!/^\d+\.\d+\.\d+/.test(want)) return { ok: false, out: '版本号看起来不对：' + want }
+
+  return startLifecycleJob('install', '安装 dsh ' + want,
+    (job) => provisionDsh(job, want, false))
+}
+
+/**
+ * 修复：dsh 包在，但补丁 / 原生插件 / 服务可能坏了 —— 不重装包，只重打补丁 + 起服务。
+ * 比升级快得多（不下载），也比「强制重装」安全（不动 npm 的账）。
+ */
+async function apiRepair() {
+  if (!fs.existsSync(DSH_PKG_JSON)) {
+    return { ok: false, out: 'dsh 还没装（读不到 ' + DSH_PKG_JSON + '）。先点「继续安装」。' }
+  }
+  if (!fs.existsSync(PATCHER)) return { ok: false, out: '补丁器缺失：' + PATCHER }
+  return startLifecycleJob('repair', '修复 dsh（重打补丁 + 重启服务）',
+    (job) => provisionDsh(job, installedVersion(), true))
+}
+
+/**
+ * 卸载 dsh：detached 跑 uninstall.sh —— 它会 sv down dsh-ctl，**把网关自己也杀掉**，
+ * 所以绝不能在 HTTP 请求里等它（响应还没写回连接就断了，留个半拆状态）。
+ * 输出写日志文件，网关被杀前能推多少推多少；面板那边按「连接断了 = 网关正被卸载」处理。
+ */
+async function apiUninstall(body) {
+  if (!fs.existsSync(UNINSTALL_SH)) return { ok: false, out: '卸载脚本缺失：' + UNINSTALL_SH }
+  const all = !!(body && body.all)
+  const started = startJob('uninstall', '卸载 dsh' + (all ? '（完全）' : ''))
+  if (!started.ok) return started
+  const job = started.job
+
+  // 复制到 TMPDIR 再跑：卸载会删掉 share 目录，脚本跑到一半把自己删了就卡住了
+  const tmpSh = TMPDIR + '/dsh-uninstall-' + Date.now() + '.sh'
+  try {
+    fs.copyFileSync(UNINSTALL_SH, tmpSh)
+    fs.chmodSync(tmpSh, 0o755)
+  } catch (e) {
+    finishJob(job, { ok: false, out: '准备卸载脚本失败：' + e.message })
+    return { ok: true, jobId: job.id, job: jobSnapshot() }
+  }
+
+  // 默认 --dsh：把 npm 包一起卸，否则「继续安装」会被旧包挡住（报「已经装了」）。
+  // --all 再加 ~/.dsh 与工作目录 —— 这是「把整个方案从手机上抹掉」那一档。
+  const args = ['-y', '--dsh']
+  if (all) args.push('--all')
+  const logFd = fs.openSync(UNINSTALL_LOG, 'w')
+  const child = spawn(BIN + '/bash', [tmpSh].concat(args), {
+    env: CHILD_ENV, stdio: ['ignore', logFd, logFd], detached: true,
+  })
+  child.unref()
+  jobLine(job, '◆ 后台执行：bash ' + tmpSh + ' ' + args.join(' '))
+  jobLine(job, '◆ 日志：' + UNINSTALL_LOG)
+
+  // 轮询日志尾部推进现场；180 秒封顶（网关被杀后这个轮询自然就停了）
+  const t0 = Date.now()
+  const timer = setInterval(() => {
+    if (Date.now() - t0 > 180000) { clearInterval(timer); return }
+    try {
+      const tail = String(execSync('tail -n 40 ' + UNINSTALL_LOG + ' 2>/dev/null',
+        { encoding: 'utf8', timeout: 5000, env: CHILD_ENV }))
+      for (const line of tail.split('\n')) {
+        const s = line.replace(/\r/g, '')
+        if (s && job.lines.indexOf(s) < 0) job.lines.push(s)
+      }
+      if (job.lines.length > 400) job.lines = job.lines.slice(-400)
+    } catch {}
+  }, 1000)
+
+  child.on('exit', (c) => {
+    clearInterval(timer)
+    try { fs.closeSync(logFd) } catch {}
+    finishJob(job, {
+      ok: c === 0,
+      out: c === 0
+        ? '卸载完成。dsh 程序 / 服务 / 网关工具都已清除；~/.dsh 用户数据' + (all ? '一并删除' : '保留') +
+          '。网关服务已被一并停止 —— 想再装，重跑 install-gateway.sh。'
+        : '卸载脚本退出码 ' + c + '（没全清干净）。完整日志：' + UNINSTALL_LOG,
+      code: c,
+    })
+  })
+
+  return { ok: true, jobId: job.id, job: jobSnapshot(), note: '卸载在后台跑，网关会被一起停掉；日志在 ' + UNINSTALL_LOG }
+}
+
+/** 面板轮询用：当前任务的现场快照。 */
+async function apiJobStatus() {
+  return { ok: true, job: jobSnapshot() }
+}
+
 
 /** 长输出只留头尾 —— npm 能吐几千行，全塞回面板既没用又卡。 */
 function clipTail(s, max) {
@@ -672,6 +872,133 @@ function clipTail(s, max) {
   if (t.length <= max) return t
   const half = Math.floor(max / 2)
   return t.slice(0, half) + '\n…（中间省略 ' + (t.length - max) + ' 字符）…\n' + t.slice(-half)
+}
+
+/* ------------------------------------------------------- 任务运行器（长任务）
+ *
+ * 安装 / 修补 / 更新 / 卸载都是长任务：npm 装包在 Termux 上要几分钟，卸载会
+ * 把网关自己都杀掉。HTTP 请求不能一直挂着，所以一律改成：
+ *   API 立刻返回 jobId → 后台跑 → 输出逐行实时收进 JOB.lines
+ *   → 面板轮询 /ctl/api/jobstatus 拿现场。
+ * 同一时间只允许一个任务（设备上并行两个 npm install 会互相踩），第二个拒绝。
+ */
+let JOB = null
+
+function startJob(kind, title) {
+  if (JOB && JOB.status === 'running') {
+    return { ok: false, out: '另一个任务正在跑（' + JOB.title + '，已开始 ' +
+      Math.round((Date.now() - JOB.startedAt) / 1000) + ' 秒）。等它完事再点。' }
+  }
+  JOB = { id: kind + '-' + Date.now(), kind, title, status: 'running', steps: [], lines: [], startedAt: Date.now(), result: null }
+  jobLine(JOB, '◆ ' + title)
+  return { ok: true, job: JOB }
+}
+
+/** 收一行进现场：剔 \r（进度条 / CRLF 会把一行劈成多行），400 行封顶丢头留尾。 */
+function jobLine(job, s) {
+  if (!job) return
+  const line = String(s == null ? '' : s).replace(/\r/g, '')
+  if (!line) return
+  job.lines.push(line)
+  if (job.lines.length > 400) job.lines = job.lines.slice(-400)
+}
+
+/** 一步的定妆照（命令 / 退出码 / 输出摘要）：runStream 跑完一步 push 一次。 */
+function jobStep(job, cmd, code, out) {
+  if (!job) return
+  job.steps.push({ cmd, code, out: clipTail(out, 4000) })
+}
+
+/** 给面板轮询的快照：最近 160 行现场 + 步骤 + 耗时 + 最终结果。 */
+function jobSnapshot() {
+  if (!JOB) return null
+  return {
+    id: JOB.id, kind: JOB.kind, title: JOB.title, status: JOB.status,
+    steps: JOB.steps, lines: JOB.lines.slice(-160),
+    elapsedS: Math.round((Date.now() - JOB.startedAt) / 1000), result: JOB.result,
+  }
+}
+
+function finishJob(job, result) {
+  job.status = result && result.ok ? 'done' : 'failed'
+  job.result = result || { ok: false, out: '（无结果）' }
+  jobLine(job, (job.status === 'done' ? '✓ 完成' : '✗ 失败') +
+    '（共 ' + Math.round((Date.now() - job.startedAt) / 1000) + ' 秒）')
+}
+
+/**
+ * 跑子进程，stdout/stderr 逐行实时塞进 job.lines —— 面板轮询时看得见进度，
+ * 不是干等一个promise。跨 chunk 的半行用 buf 拼好再切；累计输出 2MB 封顶
+ * 丢头留尾（报错都在尾部，头部的下载条没用）。
+ * 超时先 SIGTERM，3 秒不退再 SIGKILL，退出码记 124。
+ */
+function runStream(job, file, args, opts) {
+  opts = opts || {}
+  const cmd = file + ' ' + (args || []).map(String).join(' ')
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawn(file, args, { env: opts.env || CHILD_ENV, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (e) {
+      jobLine(job, '$ ' + cmd)
+      jobStep(job, cmd, 127, '执行失败: ' + e.message)
+      return resolve({ code: 127, out: '执行失败: ' + e.message })
+    }
+    jobLine(job, '$ ' + cmd)
+    let buf = ''
+    let acc = ''
+    let timedOut = false
+    let done = false
+    const finish = (code, out) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      jobStep(job, cmd, code, out)
+      resolve({ code, out })
+    }
+    const onChunk = (d) => {
+      acc += String(d)
+      if (acc.length > 2 * 1024 * 1024) acc = acc.slice(-1024 * 1024)
+      buf += String(d)
+      let i
+      while ((i = buf.indexOf('\n')) >= 0) {
+        jobLine(job, buf.slice(0, i))
+        buf = buf.slice(i + 1)
+      }
+    }
+    child.stdout.on('data', onChunk)
+    child.stderr.on('data', onChunk)
+    child.on('error', (e) => finish(127, '执行失败: ' + e.message))
+    child.on('close', (c) => finish(timedOut ? 124 : (typeof c === 'number' ? c : 1), acc))
+    let timer = null
+    if (opts.timeoutMs) {
+      timer = setTimeout(() => {
+        timedOut = true
+        jobLine(job, '⚠ 超时 ' + Math.round(opts.timeoutMs / 1000) + ' 秒，SIGTERM 停止（3 秒后强杀）')
+        try { child.kill('SIGTERM') } catch {}
+        setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 3000)
+      }, opts.timeoutMs)
+    }
+  })
+}
+
+/** 端口探测：任何 HTTP 应答都算活着（401 也算 —— 服务在，只是没登录）。 */
+function waitUp(host, port, timeoutMs) {
+  return new Promise((resolve) => {
+    const t0 = Date.now()
+    const probe = () => {
+      const req = http.request({ host, port, path: '/', method: 'GET', timeout: 3000 },
+        (res) => { res.resume(); resolve(true) })
+      const again = () => {
+        if (Date.now() - t0 > timeoutMs) return resolve(false)
+        setTimeout(probe, 3000)
+      }
+      req.on('error', again)
+      req.on('timeout', () => { req.destroy(); again() })
+      req.end()
+    }
+    probe()
+  })
 }
 
 /* ------------------------------------------------------------------ 鉴权 */
@@ -700,11 +1027,16 @@ async function buildState() {
   const token = await readToken()
   const ver = await readVersion()
   const tokPart = /token=([A-Za-z0-9_-]+)/.exec(token)
-  return {
-    ok: true,
-    services: readServices(),
-    dshVersion: ver,
-    nodeVersion: process.version,
+ return {
+   ok: true,
+   services: readServices(),
+    // 网关优先：dsh 没装时控制台只给「继续安装」这一条路（向导卡）；
+    // 卸载脚本在位才有「卸载」按钮；引导令牌处于激活期时面板要提示它的存在。
+    dshMissing: !fs.existsSync(DSH_PKG_JSON),
+    uninstallAvailable: fs.existsSync(UNINSTALL_SH),
+    bootstrapActive: fs.existsSync(BOOTSTRAP_TOKEN),
+   dshVersion: ver,
+   nodeVersion: process.version,
     host: os.hostname(),
     lanIp: ip,
     gatewayUrl: ip ? 'http://' + ip + ':' + LISTEN_PORT + '/' : '',
@@ -1144,15 +1476,62 @@ const CTL_API = {
   verify: apiVerify,
   models: apiModels,
   health: apiHealth,
-  dshcheck: apiDshCheck,
-  dshupgrade: apiDshUpgrade,
-  restart: async () => {
+ dshcheck: apiDshCheck,
+ dshupgrade: apiDshUpgrade,
+ install: apiInstall,
+ repair: apiRepair,
+ uninstall: apiUninstall,
+ jobstatus: apiJobStatus,
+ restart: async () => {
     const r = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
     await sleep(4000)
     const s = await runFile(BIN + '/sv', ['status', 'dsh-web'], 10000)
     return { ok: r.code === 0, out: s.out, state: await buildState() }
   },
-  log: async (b) => ({ ok: true, out: serviceLog(clean(b.name) || 'dsh-web', Number(b.lines) || 60) }),
+ log: async (b) => ({ ok: true, out: serviceLog(clean(b.name) || 'dsh-web', Number(b.lines) || 60) }),
+}
+
+/* dsh 还没装 / 刚卸载时，引导令牌持有者能用的接口子集。
+ * save / apply / manifest / key 这些能改配置的一律排除：引导令牌是明文 URL 里传的，
+ * 谁拿到链接谁能点 —— 可以装东西、不可以改 dsh 的后端配置。 */
+const BOOTSTRAP_WHITELIST = ['state', 'install', 'repair', 'uninstall', 'jobstatus', 'dshcheck', 'dshupgrade', 'log', 'restart']
+
+/* ------------------------------------------------------- 引导令牌
+ *
+ * dsh 还没装好时，控制台没有 dsh 的登录 cookie 可用 —— 这时唯一能进控制台的
+ * 凭据就是这个 32 位令牌。它由 install-gateway.sh 生成（600 权限），装完 dsh
+ * 并成功登录一次后自动撤销（revokeBootstrap）：明文放在 URL 里传来传去，
+ * dsh 上线后就没必要再留着这个入口。
+ */
+
+/** 读令牌：16~64 位 urlsafe；文件不在 / 格式不对都算没有。 */
+function readBootstrap() {
+  try {
+    const t = readText(BOOTSTRAP_TOKEN).trim()
+    return /^[A-Za-z0-9_-]{16,64}$/.test(t) ? t : ''
+  } catch { return '' }
+}
+
+/** 定长比较，不短路 —— 抗时序侧信道（一位一位比，别让攻击者靠耗时猜字符）。 */
+function bootstrapValid(given) {
+  const want = readBootstrap()
+  if (!want || !given || given.length !== want.length) return false
+  let d = 0
+  for (let i = 0; i < want.length; i++) d |= want.charCodeAt(i) ^ given.charCodeAt(i)
+  return d === 0
+}
+
+/** 请求里带的引导令牌：query 参数 > 自定义头。body 里的由 handleCtl 从 JSON 里取。 */
+function bootstrapGiven(req, url) {
+  const q = url.searchParams ? url.searchParams.get('bootstrap') : null
+  if (q) return String(q)
+  const h = req.headers['x-bootstrap-token']
+  return h ? String(h) : ''
+}
+
+/** 撤销：有 dsh 登录的浏览器进来一次就删掉，别留长期后门。 */
+function revokeBootstrap() {
+  try { fs.unlinkSync(BOOTSTRAP_TOKEN) } catch {}
 }
 
 async function handleCtl(req, res, url) {
@@ -1162,16 +1541,48 @@ async function handleCtl(req, res, url) {
   const authed = code === 404
 
   if (url.pathname === '/ctl' || url.pathname === '/ctl/') {
-    return html(res, authed ? 200 : 401, authed ? PANEL_HTML : loginPage(hostHeader))
+    // 已登录：这个浏览器拿到了 dsh 的 cookie，引导令牌就此失效（明文 URL 传的东西别长期留）
+    if (authed) {
+      revokeBootstrap()
+      return html(res, 200, PANEL_HTML)
+    }
+    // 没登录但带着有效引导令牌（URL 里 ?bootstrap=…）：也给面板
+    if (bootstrapValid(bootstrapGiven(req, url))) return html(res, 200, PANEL_HTML)
+    // 其它情况：引导页（粘贴令牌的表单 + 去 /app 登录的入口），不打印令牌本身
+    return html(res, 200, bootstrapPage(hostHeader))
   }
   if (!url.pathname.startsWith('/ctl/api/')) return json(res, 404, { ok: false, out: 'not found' })
-  if (!authed) return json(res, 401, { ok: false, out: code === 0 ? '连不上 dsh web（服务没起？）' : '未登录或围栏拒绝（dsh /api 返回 ' + code + '）' })
 
   const name = url.pathname.slice('/ctl/api/'.length)
   const fn = CTL_API[name]
   if (!fn) return json(res, 404, { ok: false, out: 'unknown api ' + name })
+
+  // body 只读一次：请求流不能重放
+  let body = {}
+  if (req.method === 'POST') {
+    try { body = await readBody(req) } catch { body = {} }
+  }
+
+  if (authed) {
+    // 已登录：完整权限
+    try {
+      return json(res, 200, await fn(body))
+    } catch (e) {
+      return json(res, 500, { ok: false, out: String((e && e.stack) || e) })
+    }
+  }
+
+  // 未登录：引导令牌 + 白名单，少一样都不行
+  const bs = (body && body.bootstrap ? String(body.bootstrap) : '') || bootstrapGiven(req, url)
+  if (!bootstrapValid(bs)) {
+    return json(res, 401, { ok: false, bsExp: true,
+      out: '未登录且引导令牌无效。dsh 已上线就先去 /app 登录；刚装完网关就重新执行 install-gateway.sh 拿令牌。' })
+  }
+  if (BOOTSTRAP_WHITELIST.indexOf(name) < 0) {
+    return json(res, 403, { ok: false,
+      out: '引导令牌只能用安装 / 修复 / 卸载 / 状态这类接口。请登录 dsh 后再动配置。' })
+  }
   try {
-    const body = req.method === 'POST' ? await readBody(req) : {}
     return json(res, 200, await fn(body))
   } catch (e) {
     return json(res, 500, { ok: false, out: String((e && e.stack) || e) })
@@ -1225,7 +1636,11 @@ function serveSpa(req, res) {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
           return res.end(b)
         }
-        buildState().then((st) => { if (!res.headersSent) html(res, 200, portalPage(st)) })
+        // 401/403 = dsh 在线但这个浏览器没登录 → 登录页；其它非 200 当上游挂了处理
+        if (pres.statusCode === 401 || pres.statusCode === 403) {
+          return html(res, 200, loginPage(req.headers.host || ''))
+        }
+        return html(res, 200, downPage('取 dsh 首页返回 ' + pres.statusCode))
       })
     },
   )
@@ -1295,39 +1710,28 @@ function downPage(msg) {
 <p class="muted">到手机上执行： <kbd>sv status dsh-web</kbd> → <kbd>sv restart dsh-web</kbd></p></div>`)
 }
 
-function portalPage(st) {
-  const ip = st.lanIp || '<手机IP>'
-  const tok = (/(?:[?&]token=)([A-Za-z0-9_-]+)/.exec(st.directUrl) || [, ''])[1]
-  return shell('dsh 网关 · 需登录', `
-<h1>dsh 网关 · ${ip}:${LISTEN_PORT}</h1>
-<div class="sub">这个端口是网关自己的管理入口；dsh 主界面挂在 <kbd>/app</kbd>。</div>
-
-<div class="card">
-  <h2>先登录一次</h2>
-  <p class="muted">这个浏览器在 <kbd>${ip}:${LISTEN_PORT}</kbd> 上还没有 dsh 的登录 cookie。
-  dsh 的 cookie <b>按地址绑定</b>，所以 3080 上登过不算，8030 要单独走一次。</p>
-  <p class="row"><a href="/app?token=${tok}"><button class="primary">用下面的令牌登录 →</button></a></p>
-  <pre>http://${ip}:${LISTEN_PORT}/app?token=${tok || '<取不到令牌>'}</pre>
-  <p class="muted" style="margin-top:10px">登录后回 <kbd>http://${ip}:${LISTEN_PORT}/</kbd> 就是控制台。</p>
-</div>
-
-<div class="card">
-  <h2>服务</h2>
-  <div class="row">${st.services.map((s) => `<span class="chip"><span class="dot ${s.up ? 'ok' : 'no'}"></span>${s.name} ${s.up ? '运行中' : s.installed ? '未运行' : '未安装'}</span>`).join('')}</div>
-  <p class="muted" style="margin-top:10px">dsh ${st.dshVersion || '?'} · node ${st.nodeVersion}</p>
-</div>
-
-<div class="card">
-  <h2>路由速查</h2>
-  <table>
-    <tr><th>路径</th><th>去哪</th></tr>
-    <tr><td><kbd>/</kbd></td><td>网关控制台（设置 / 状态 / 模型）</td></tr>
-    <tr><td><kbd>/app</kbd></td><td>dsh 主界面</td></tr>
-    <tr><td><kbd>/ctl/api/…</kbd></td><td>控制台接口</td></tr>
-  </table>
-  <p class="muted" style="margin-top:10px">公共 Wi-Fi 下建议 <kbd>sv down dsh-lan</kbd> 关掉多余的局域网入口。</p>
-</div>`)
-}
+ /** 没登录又没令牌时的落地页：粘贴引导令牌的表单 + 去 /app 登录的入口。令牌本身绝不往页面上打。 */
+ function bootstrapPage(host) {
+   return shell('dsh 网关 · 引导', `
+ <h1>dsh 网关 · ${host || '本机'}</h1>
+ <div class="sub">网关的管理入口；dsh 主界面挂在 <kbd>/app</kbd>。</div>
+ 
+ <div class="card">
+   <h2>有引导令牌</h2>
+   <p class="muted">装网关时（install-gateway.sh）会生成一个 32 位令牌，贴进来就能进控制台：装 / 修 / 卸 dsh 都行。</p>
+   <form method="GET" action="/ctl" autocomplete="off">
+     <label for="bs">引导令牌</label>
+     <input id="bs" name="bootstrap" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="粘贴 install-gateway.sh 打印的令牌">
+     <p class="row" style="margin-top:10px"><button class="primary" type="submit">进入控制台 →</button></p>
+   </form>
+ </div>
+ 
+ <div class="card">
+   <h2>dsh 已经装好了？</h2>
+   <p class="row"><a href="/app"><button>去 /app 用 dsh 账号登录 →</button></a></p>
+   <p class="muted">登录一次，cookie 就对网关这个地址生效，回来就是完整控制台；引导令牌同时自动作废。</p>
+ </div>`)
+ }
 
 /* ------------------------------------------------------------------ 启动 */
 
@@ -1368,9 +1772,15 @@ function onRequest(req, res) {
     }
     return probeAuth(req.headers.host || '', req.headers.cookie || '').then((code) => {
       if (res.headersSent) return
-      if (code === 404) return html(res, 200, PANEL_HTML)
-      if (code === 0) return html(res, 502, downPage('连接 127.0.0.1:' + UP_PORT + ' 失败'))
-      return buildState().then((st) => { if (!res.headersSent) html(res, 200, portalPage(st)) })
+      // 404 = 探针路径，cookie 对这个地址有效 → 完整面板；明文令牌留在 URL 里没意义了，顺手作废
+      if (code === 404) {
+        revokeBootstrap()
+        return html(res, 200, PANEL_HTML)
+      }
+      // 没登录但带着有效引导令牌（?bootstrap=…）：面板伺候
+      if (bootstrapValid(bootstrapGiven(req, url))) return html(res, 200, PANEL_HTML)
+      // 其它：401/403（dsh 在线但没登录）或 0（dsh 还没装 / 没跑）都落到引导页
+      return html(res, 200, bootstrapPage(req.headers.host || ''))
     })
   }
 

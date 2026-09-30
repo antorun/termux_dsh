@@ -758,3 +758,206 @@ runFile(NPM_BIN, ['install', '-g', DSH_PKG + '@' + want], NPM_UPGRADE_TIMEOUT, N
 **顺带记一笔**：`install-ctl.sh` 的「全标启用」自测会把 active 归一到**第一把**
 （跑完是 `gateway-t1`，原先是 `atria-t1`）。它的还原基准是「归一化之后」的 md5，
 不是「跑之前」的 —— 所以跑安装器可能顺手改掉当前启用的那把。已知，未改。
+
+---
+
+## 九、卸载（`install/uninstall.sh`，2026-09-30 新增）
+
+装得上也要卸得干净。卸载是 install.sh 的严格逆操作：**README「目录结构」表里写明的设备
+落点，多一个不删，少一个不落。**
+
+卸什么：
+
+| 层 | 内容 |
+|---|---|
+| 服务 | `sv down` 停服务 → `$SVDIR/{dsh-web,dsh-lan,dsh-ctl}` → 对应的 `$PREFIX/var/log/sv/<服务>` |
+| 工具 | `$PREFIX/bin/` 里 8 个自写工具（精确名单，见 1.4） |
+| 面板 | `$PREFIX/share/dsh-ctl/`（`panel.html` / `patches.py` / `build-flock.sh`） |
+
+默认保留（和升级链一条线：可以失败回滚，但用户数据不丢）：`~/.dsh`（会话 / profile / 密钥）、
+`~/.dsh-termux-backup`（补丁原始备份）、`~/dsh-termux`（工作目录 + `backups/` 备份史）、
+dsh npm 包本体（`--dsh` 才删 —— 14 处补丁和 flock 原生模块全在包里，想再用：
+`npm i -g @deepseek-ai/dsh` → `patches.py` → `build-flock.sh`）。
+
+四个刻意的设计决策：
+
+1. **绝不用 `dsh*` 通配**。`$PREFIX/bin/dsh` 是 npm 装的符号链接
+   （→ `../lib/node_modules/@deepseek-ai/dsh/lib/bin.js`），动它就是动 npm 的账。同理
+   日志目录按服务名精确删除 —— `$PREFIX/var/log/sv/` 下面还有 cloudflared / sshd / mysite
+   等别人的日志。
+2. **每刀先路径守卫**：非空且必须在 `$PREFIX` 或 `$HOME` 之下，越界拒绝并记录（退出 3）。
+3. **交叉确认 + 复核**：交互要输全字 `yes`（防手抖）；删完逐项复核，服务目录被 runsv 占着
+   是正常的，等 5 秒再扫一遍。
+4. **8030 控制台里没有「卸载」按钮**。网关自己就是被删的对象 —— 收到请求、删到一半把自己
+   `rm` 掉，响应还没写回连接就断了，半拆状态比不卸更糟。破坏性操作留在设备侧脚本，和
+   「更新到 x.y.z」五步链同一个理由：要能失败、要能看清楚、要能回滚。
+
+幂等：删过的再跑是 no-op；全都不在时报「没有可卸载的东西」退出 0。
+`PREFIX` / `SVDIR` / `LOGDIR` / `HOME` 允许环境变量覆盖（同 `install-web-service.sh`
+的约定），既能用于非交互 SSH，也能在假树上把破坏性路径真跑一遍。
+
+**一个坑**：`say "盘点要删什么（PREFIX=$PREFIX）"` 在 macOS 自带 bash 3.2 下会把全角
+括号的字节吃进变量名（`set -u` 直接报 unbound variable 杀掉脚本）—— Termux 的 bash 5
+没事，但脚本应当到处都能跑，所以变量后接多字节字符一律写 `${PREFIX}`。
+
+测试：`tests/test-uninstall.sh` 在 Mac 上造假树（假 `$PREFIX` 含 runit 服务目录、svlogd
+日志、8 个工具、`share/`、npm 包；假 `$HOME` 含 `.dsh` / 备份 / 工作目录；`sv` / `npm`
+是桩脚本），把破坏性路径真跑一遍 —— 67 项断言覆盖预演、默认层、`--all`、幂等、拒绝确认、
+参数错误；还放了 `cloudflared` 服务/日志和 npm 的 `bin/dsh` 符号链接两个「绝对不能误删」
+的哨兵。真机上用 `-n` 预演验证过清单与实际部署一致（3 服务 + 8 工具 + 面板资源），
+预演后三个服务的 PID 不变、8030 控制台照常 200。
+
+---
+
+## 十、网关优先生命周期管理（2026-09-30 新增）
+
+### 问题：顺序反了
+
+原来的流程是「先在 SSH 里把 dsh 装好 → 再装网关」。但 dsh 是 300MB 级 npm 包 + koffi/flock
+现编，SSH 里干等一个 `npm install` 几分钟起步：中途没进度、断了重跑、koffi 编译失败还得回滚。
+这一全程恰恰是最需要「看着进度」的地方，却偏偏发生在连控制台都还没有的时候。
+
+**网关优先**把顺序倒过来：安装器只装「入口」（网关 + 面板 + 生命周期脚本，几秒落盘），
+dsh 本体的装 / 修 / 升 / 卸全部挪到浏览器控制台里完成。哪怕 dsh 还不存在，8030 上也已经
+有一个能点的地方。
+
+### 入口：`install-gateway.sh`（`.head.sh` + `build-install-gateway.py` 生成）
+
+单文件、幂等、可直接 bash 执行，base64 内联 14 个 payload，五步：
+
+| 步 | 做什么 | 备注 |
+|---|---|---|
+| 0 | 备份：`$PREFIX/bin/` 下 8 个工具、`panel.html`、`~/.dsh/{sites,accounts}.json`、两个 profile 的 `cordis.patch.yml` 全 `cp -a` 到 `~/dsh-termux/backups/` | dsh 已装就原地更新网关，不动 dsh |
+| 1 | 落网关全套：9 个工具 + 面板 + 生命周期四件套（`patches.py` / `build-flock.sh` / `uninstall.sh` / `install-web-service.sh`），逐件 `node --check` / `bash -n` / `ast.parse` 自检 | 自检失败即停 |
+| 2 | 建 / 复位 runit 服务 `dsh-ctl`：<lan-ip>:8030 → 127.0.0.1:3080 | 服务目录已存在就复位 run 脚本 |
+| 3 | 引导令牌：沿用现有的，或缺了就生成 32 位（权限 600） | 格式不合（非 16~64 位 urlsafe）就跟没有一样，重新生成 |
+| 4 | 启动：`sv restart`（已有服务）/ `sv up`（新建），最多等 25 秒出 `run:` | 起不来退出 1 并指向日志 |
+| 5 | 五项验证：`/ctl` 200 引导页、`?bootstrap=<对令牌>` 200 面板含向导、`state` 带头 `ok:true`、错令牌 401、非白名单接口 `save` 403 | 没 curl / 没拿到 LAN IP 就跳过验证，令牌照常有效 |
+
+### 引导令牌（bootstrap token）
+
+dsh 没装时控制台还没有 dsh 的登录 cookie 可用，唯一凭据就是这个令牌：
+
+- 16~64 位 urlsafe，存 `$PREFIX/share/dsh-ctl/.bootstrap-token`（600），安装器只在结束时打印一次
+- 请求里三种带法：URL `?bootstrap=…` > 自定义头 `x-bootstrap-token` > body 里的 `bootstrap` 字段
+- 白名单 `BOOTSTRAP_WHITELIST = ['state','install','repair','uninstall','jobstatus','dshcheck','dshupgrade','log','restart']`
+  —— 只读 + 生命周期；`save` / `apply` / `manifest` / `key` 这些能改后端配置的一律 403。
+  引导令牌是明文 URL 里传的，谁拿到链接谁能点 —— **可以装东西，不可以改配置**
+- `bootstrapValid` 定长比较不短路（逐位异或、全程不提前 return），抗时序侧信道
+- **dsh 上线并被登录一次后自动撤销**（`revokeBootstrap` 删文件）：明文 URL 传的东西，dsh 有自己
+  的 cookie 后就没必要再留这个入口。已撤销再访问 → 401 带 `bsExp:true`
+- `/ctl` 三态：已登录 → 面板（顺手撤销令牌）；未登录但令牌有效 → 面板；其余 → 引导页（贴令牌表单 + 去 `/app` 登录的入口，不打印令牌本身）
+
+### 长任务：job 契约
+
+装 / 修 / 升 / 卸都是长任务（npm 装包几分钟，卸载会连网关自己一起杀掉），HTTP 请求不能挂着等。
+统一改成：**API 立刻返回 jobId → 后台跑 → 输出逐行实时收进 `lines` → 面板轮询 `/ctl/api/jobstatus`**。
+
+```json
+{ "ok": true, "job": { "id": "install-1727…", "kind": "install", "title": "安装 dsh 0.2.0-rc.2",
+  "status": "running",
+  "steps": [{ "cmd": "…npm install -g @deepseek-ai/dsh@0.2.0-rc.2", "code": 0, "out": "…" }],
+  "lines": ["$ …", "…"], "elapsedS": 47, "result": null } }
+```
+
+- `steps[]`：一步的定妆照（命令 / 退出码 / 输出摘要）。输出 `clipTail` 头尾各留 2000 字符 ——
+  npm 能吐几千行，全塞回来既没用又卡
+- `lines[]`：实时现场。剔 `\r`（进度条会把一行劈成多行），400 行封顶丢头留尾，快照只给最近 160 行
+- 同一时间只允许一个任务（设备上并行两个 `npm install` 会互相踩），第二个直接拒绝，并告诉用户
+  当前任务的标题和已跑秒数
+- 完成后 `jobstatus` 保留**最后一个任务的快照**（不是 null），面板晚几十秒来看结果也还在
+- 面板轮询节奏：600ms 一次，连续 miss 两次以上降为 3000ms
+
+### 装修升共用一条链：`provisionDsh`
+
+`install`（dsh 还没有）/ `dshupgrade`（换版本）/ `repair`（包在但坏了）共用一个引擎，区别只在
+是否走 npm：
+
+| 步 | 命令 | 失败处理 |
+|---|---|---|
+| 1 | 备份：整个 `@deepseek-ai` 作用域目录**改名**挪走（`mv` 瞬时；`cp -a` 300MB 要几十秒） | 改名失败就不装 |
+| 2 | `npm install -g @deepseek-ai/dsh@<目标>`，带 `NPM_BUILD_ENV` 编译标志 | **自动回滚**：删装坏的、把备份改回来、`sv restart dsh-web` |
+| 3 | `python3 patches.py`（幂等，带锚点断言；退出码 0/1/2） | 补丁没全打成 → 失败（升级时包已换，提示手动处理或卸载重装） |
+| 4 | `dsh-patch-lan-settings` | **非致命**，只往 lines 推一行警告 |
+| 5 | `build-flock.sh`（flock 原生模块被 npm 冲掉了才编） | 非致命（只影响那条子系统） |
+| 6 | `install-web-service.sh`（服务目录不在才建）+ `sv up/restart dsh-web`（最多 8 轮，每轮间隔 2.5s） | 起不来 → 失败并指向 `$PREFIX/var/log/sv/dsh-web/current` |
+| 7 | 等 3080 端口应答（`waitUp` 120s）+ `readToken`×10 拿登录令牌，拼出可直接点的链接 | 非致命（链接拿不到不影响 `ok`） |
+
+第 2 步的编译标志（`NPM_BUILD_ENV`）是这一轮补上的。上一轮真机升 0.2.0-rc.2 栽在 `koffi`
+（预编译二进制加载失败 → 回源码编译 → 当时设备没 CMake），回滚 100% 生效但升级 itself 失败。
+这一轮两件事一起办了：设备补 `cmake` / `ninja`，安装链给 `CFLAGS`/`CXXFLAGS` 带上
+
+```
+--target=aarch64-unknown-linux-android30 -D_GNU_SOURCE
+```
+
+原因是 bionic 的 `<sys/stat.h>` 里 `statx()` 同时要 `__USE_GNU`（即 `-D_GNU_SOURCE`）和
+API>=30 两个条件，少一条 `statx` 就只剩类型没有函数，clang 报出来的那句
+`cannot initialize a member subobject of type '__u32' with an lvalue of type 'const char *'`
+看着像参数写错，其实是函数根本没声明。设备实测（clang 21.1.8 / cmake 4.4.3 / ninja 1.13.2）
+裸编译 ✗、只 `-D_GNU_SOURCE` ✗、再加 `-D__ANDROID_API__=30` ✗（宏被内置定义覆盖）、
+`--target=…android30 -D_GNU_SOURCE` ✓ 编 / 链 / 跑全通。
+
+`repair` 刻意**不挪包也不走 npm**：包没换就没必要冒险动它，只重打补丁 + 起服务 —— 比升级快
+（不下载 300MB），也比「强制重装」安全（不动 npm 的账）。
+
+### 卸载：detached 跑
+
+第九节里那条「8030 控制台里没有『卸载』按钮 —— 网关自己就是被删的对象，删到一半把自己
+`rm` 掉，响应还没写回连接就断了，半拆状态比不卸更糟」—— 这一轮把它解了：
+
+1. 把 `uninstall.sh` **复制到 TMPDIR** 再跑 —— 卸载会删 `share/dsh-ctl/`，脚本跑到一半把
+   自己删了就卡住
+2. `spawn(..., { detached: true, stdio: ['ignore', fd, fd] })` + `unref()`，输出写
+   `$TMPDIR/dsh-uninstall.log`（追加模式，网关被杀前能推多少推多少）
+3. API 立刻返回 jobId；网关存活时每秒 `tail -n 40` 日志推进现场（180 秒封顶，网关被杀后
+   轮询自然停止）
+4. 默认参数 `-y --dsh`（把 npm 包一起卸）—— 否则「继续安装」会被旧包挡住报「已经装了」；
+   `--all` 是「把整个方案从手机上抹掉」那一档（连 `~/.dsh` 用户数据一起）
+5. 面板那侧按「连接断了 = 网关正被卸载」理解这个行为，不当作故障
+
+破坏性操作从「 SSH 里敲命令」挪到「网页上点按钮」的代价，靠这两条兜住：脚本跑在独立进程里
+（不受 HTTP 连接生死影响），且复制出来再跑（不怕删到自己）。
+
+### 面板（`share/dsh-ctl/panel.html`）
+
+- 引导页：粘贴令牌的表单（`bsToken()` 存 sessionStorage），不回显令牌
+- 安装向导 `#wizard` 卡片：dsh 未装时显示 —— 通道下拉（latest / next / alpha）或手填版本，
+  「开始安装」按钮
+- 任务弹窗 `#jmodal`：`pollJob()` 轮询（600ms / 3000ms 退避），日志实时滚，步骤逐条显示
+  命令 + 退出码 + 输出，底栏 sticky（沿用第八节那个「按钮被顶出视口」的修法）
+- 装完在弹窗里给出令牌登录链接（`/app?token=…`），点开直接进 dsh 主界面
+- dsh 装好后向导卡片消失，改走服务卡片上常规的「修复 / 更新到 x.y.z / 卸载」
+
+### 测试
+
+`tests/test-gateway.sh`：Mac 上造假树（假 `$PREFIX` + 假 `$HOME` + `sv` / `npm` / `ifconfig`
+桩脚本 + 假上游 node），把网关真跑起来，70 项断言：
+
+| 组 | 内容 |
+|---|---|
+| T1 鉴权 | 引导页 200 / 带对令牌 200 面板 / 错令牌 401 / 非白名单 403 / 白名单内放行 |
+| T2 安装 job | jobId 返回 / 拒绝并发第二个任务 / npm 调用参数正确 / steps 与 lines 结构 / 完成态 |
+| T3 修复幂等 | 不走 npm（数调用次数）/ 重打补丁成功 |
+| T4 卸载 detached | API 立刻返回 / 后台真把假树拆了 / 日志推进现场 |
+| T5 完成态保留 | jobstatus 在任务结束后仍返回最后任务快照（非 null） |
+| T6 登录撤销令牌 | 拿 dsh 登录 cookie 访问一次后，引导令牌失效（curl 要带 `-H "cookie: session=…"`） |
+
+写这套测试时踩的三个坑（都是「桩脚本」本身的）：
+
+- 桩脚本的 shebang 必须写**绝对路径** `#!/bin/bash`。写 `#!/usr/bin/env bash` 时 `CHILD_ENV`
+  把假树 bin 排在 PATH 最前，`env bash` 会递归找到桩自身 → 参数列表无限增长 →
+  `E2BIG: Argument list too long`
+- `ifconfig` 桩必须 `echo` 出文本。裸把数据行写给 bash 执行（exit 127）→ `lanIp()` 落空 →
+  拼出的 `appUrl` 是空串，下游断言全灭
+- 数 npm 调用次数别写 `grep -c … || echo 0`：grep 没匹配时输出 `"0\n0"`，拼成字符串喂给
+  算术比较直接炸。要用 `grep … | wc -l`
+
+### 与既有结构的关系
+
+- 网关 (`bin/dsh-ctl-gateway`) 从「反向代理 + 控制面」扩成「反向代理 + 控制面 + 生命周期
+  引擎」：+579 / −131 行，全部在 `/* … */` 分块注释划出的新区里，代理路径一行没动
+- `install/uninstall.sh` 本身**没改**，只是被网关复制到 TMPDIR 后台调用 —— 第九节的设计
+  （路径守卫 / 精确名单 / 幂等）原样复用
+- 老入口 `install-ctl.sh` / `install-lan.sh` / `install.sh` 保留不动；`install-gateway.sh`
+  是面向「新设备 / 想全网页操作」的入口，不是替换

@@ -13,7 +13,7 @@ dsh 本体是为 glibc Linux / macOS / Windows 构建的，在 Android 上会连
 
 | 形态 | 入口 | 用途 |
 |---|---|---|
-| 控制台 | `http://<LAN-IP>:8030/` | 服务状态 / 模型后端 / 接口与密钥 / 自检 |
+| 控制台 | `http://<LAN-IP>:8030/` | 服务状态 / 模型后端 / 接口与密钥 / 自检 / **装·修·升·卸 dsh** |
 | dsh 主界面 | `http://<LAN-IP>:8030/app` | 经网关带令牌进入，手机浏览器里的主力形态 |
 | 裸转发 | `http://<LAN-IP>:3080/` | 只做 TCP 转发，不带控制面 |
 | 本机 | `http://127.0.0.1:3080/` | Termux 终端里由 `dsh-web-url` 直接给出带令牌 URL |
@@ -40,11 +40,14 @@ dsh 本体是为 glibc Linux / macOS / Windows 构建的，在 Android 上会连
 | `runit/dsh-ctl-run` | `$SVDIR/dsh-ctl/run` | 服务 `dsh-ctl`：`<LAN-IP>:8030` |
 | `runit/dsh-lan-run` | `$SVDIR/dsh-lan/run` | 服务 `dsh-lan`：`<LAN-IP>:3080` |
 | `install/install.sh` | 推 `$TMPDIR` 执行 | 入口：打 JS 补丁 / 体检（`--check`） |
+| `bootstrap.sh`（仓库根） | curl 管道执行，不落地 | **一键入口**：从 GitHub raw 拉源 → 构建 `install-gateway.sh` → 执行（见「快速开始 · 0」） |
+| `install/uninstall.sh` | 同上 | install.sh 的逆操作（幂等）：`-n` 预演，默认保留 `~/.dsh` / dsh 包，`--all` 全拆 |
 | `install/patches.py` | 推 `$TMPDIR` 执行；**同时**落 `$PREFIX/share/dsh-ctl/` | 幂等补丁器，14 处改动带 marker，npm 升级后重跑即可 |
 | `install/build-flock.sh` | 推 `$TMPDIR` 执行；**同时**落 `$PREFIX/share/dsh-ctl/` | `clang -shared` 直编 `system.node`，**绕开 node-gyp**（它在 Termux 上编不出来） |
 | `install/install-web-service.sh` | 同上 | 装 `dsh-web` runit 服务 |
 | `install/install-lan.head.sh` + `build-install-lan.py` | → 生成 `install-lan.sh` | 装 `dsh-lan` 裸转发 |
 | `install/install-ctl.head.sh` + `build-install-ctl.py` | → 生成 `install-ctl.sh` | 装 8030 网关 + 控制台（幂等，含 200+ 行断言） |
+| `install/install-gateway.head.sh` + `build-install-gateway.py` | → 生成 `install-gateway.sh` | **网关优先入口**：单文件装网关 + 控制台 + 生命周期四件套；dsh 本体留给控制台装 |
 | `install/install-key-path.sh` / `install-provider-tools.sh` | 同上 | 密钥通路 / 工具升级 |
 | `install/merge-patch-into-patcher.sh` / `tighten-pid-detect.sh` | 同上 | 把一次性改动并入补丁器 / 收紧进程识别 |
 | `tests/` | 本机 | 面板静态自检 + 真浏览器交互断言 + 假后端预览 |
@@ -57,9 +60,56 @@ dsh 本体是为 glibc Linux / macOS / Windows 构建的，在 Android 上会连
 
 ## 快速开始
 
-前提：Termux 里 `pkg install nodejs-lts clang make python git`，然后 `npm i -g @deepseek-ai/dsh`。
+### 0. 一键 curl（最省事）
+
+Termux 里只要 `pkg install curl python`，然后一行：
+
+    curl -fsSL https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | bash
+
+它从 GitHub raw 拉源文件、当场构建 `install-gateway.sh` 并执行 —— 落网关、起 8030、
+打印引导令牌（相当于自动完成下面 A 的第 1、2 步）。指定分支 / tag / commit：行尾加
+`bash -s <ref>`。之后照 A 的第 3、4 步在浏览器里装 dsh、走生命周期。
+
+为什么不直接下载现成安装器：`install-gateway.sh` 是生成物，按项目规矩不入版本库
+（改了 payload 忘重建、产物里长期内联旧版本的亏吃过）；bootstrap 拉源当场构建，
+永远和仓库一致。raw 网络不通时的备选：`git clone` 后在仓库里跑同一条命令（失败时
+脚本会提示）。
+
+### A. 网关优先（推荐）
+
+先装「入口」，再在浏览器里装 dsh 本体 —— 哪怕 dsh 还没有，8030 上已经有一个能点的地方。
+
+前提：Termux 里 `pkg install nodejs-lts python curl termux-services`（`termux-services` 装完
+重开 Termux，让 `runsvdir` 起来）。**dsh 本体不用手动 npm 装**，控制台会装。
 
 ```bash
+# 1) 在任意能跑 python3 的机器上（本机即可），生成单文件安装器
+python3 install/build-install-gateway.py      # → install/install-gateway.sh
+
+# 2) 推到设备执行（scp / adb push / 任意方式；脚本幂等，可重复跑）
+scp install/install-gateway.sh <设备>:~/
+ssh <设备> 'bash ~/install-gateway.sh'
+#    → 落 9 个工具 + 面板 + 生命周期四件套 → 起 dsh-ctl 服务 → 打印引导令牌
+#    旧文件会被备份到 ~/dsh-termux/backups/，现有 ~/.dsh 配置原样保留
+
+# 3) 浏览器打开安装器最后打印的地址（dsh 未装时这就是入口）
+#    http://<LAN-IP>:8030/ctl?bootstrap=<引导令牌>
+#    → 选通道（latest / next / alpha）或手填版本 →「开始安装」，进度实时滚
+#    → 装完点页面给出的令牌链接进 dsh 主界面；引导令牌登录一次后自动作废
+
+# 4) 之后的全生命周期都在控制台里：修复 / 更新 / 卸载，SSH 都不用开
+```
+
+引导令牌存在 `$PREFIX/share/dsh-ctl/.bootstrap-token`（600），16~64 位 urlsafe；
+安装器只在结束时打印一次。它只能调白名单里的只读 + 生命周期接口（`state` / `install` /
+`repair` / `uninstall` / `jobstatus` / `dshcheck` / `dshupgrade` / `log` / `restart`），
+**改配置类的接口（`save` 等）一律 403** —— 引导令牌不是登录态，不能拿去改接口配密钥。
+dsh 装好并被登录一次后令牌自动作废，控制台改用 dsh 自己的 cookie。
+
+### B. 手工路径（不想用控制台）
+
+```bash
+# 前提：pkg install nodejs-lts clang make python git，然后 npm i -g @deepseek-ai/dsh
 # 1) 把 install/ 整个推到设备（scp 或任意方式），在设备上执行
 cd $TMPDIR/install
 bash install.sh            # 打 JS 补丁；--flock 顺便编原生模块，--check 只体检
@@ -73,11 +123,22 @@ python3 build-install-ctl.py && bash install-ctl.sh    # <LAN-IP>:8030 网关 + 
 
 # 4) 取访问地址
 dsh-web-url --all
+
+# 5) 卸载（install.sh 的逆操作，幂等）
+bash uninstall.sh -n          # 预演：只列清单，一个字节都不动（先跑这个）
+bash uninstall.sh             # 交互确认后卸 服务 + 工具 + 面板（默认保留 ~/.dsh / dsh 包）
+bash uninstall.sh -y --all    # 全拆：连 dsh 包 / 用户数据 / 工作目录
 ```
 
-生成的 `install-ctl.sh` / `install-lan.sh` 是**单文件、可直接 bash 执行、幂等** —— 内联 base64 是为了
-一次传输不失真。**注意它们由 `.head.sh` + `build-*.py` 生成，不入版本库**（曾经发生过：改了
-`bin/dsh-web-url` 却忘了重建，`install-lan.sh` 里长期内联着旧版本。所以产物一律现生成）。
+生成的 `install-gateway.sh` / `install-ctl.sh` / `install-lan.sh` 都是**单文件、可直接 bash
+执行、幂等** —— 内联 base64 是为了一次传输不失真。**注意它们由 `.head.sh` + `build-*.py`
+生成，不入版本库**（曾经发生过：改了 `bin/dsh-web-url` 却忘了重建，`install-lan.sh` 里
+长期内联着旧版本。所以产物一律现生成）。
+
+卸载脚本的默认层只删 termux_dsh 自己装的东西（服务 / 工具 / 面板），**用户数据、补丁备份、
+工作目录、dsh npm 包一律保留** —— 和升级链同一个原则：可以失败回滚，但用户数据不丢；要彻底
+清掉用 `--all`。什么都不剩时再跑会报「没有可卸载的东西」并退出 0。
+控制台里也能卸（「卸载」按钮 = 后台 detached 跑同一个 `uninstall.sh`），见下文第十节。
 
 ---
 
@@ -95,6 +156,13 @@ node tests/test-panel-ui.js            # 期望「失败 0 项」（当前 135 �
 
 # 设备上：验证「改配置是否需要重启」
 bash $PREFIX/bin/verify-hot-reload.sh
+
+# 卸载脚本：在 Mac 上造假树（假 $PREFIX + 假 $HOME + sv/npm 桩脚本）真跑 rm -rf
+bash tests/test-uninstall.sh          # 期望「失败 0 项」（67 项断言）
+
+# 网关 + 生命周期：假树 + 假上游 node，真跑安装 / 修复 / 卸载 job（令牌鉴权、
+# 并发拒绝、回滚、卸载 detached、完成态保留、登录撤销令牌）
+bash tests/test-gateway.sh            # 期望「失败 0 项」（70 项断言，约 19 秒）
 ```
 
 `test-panel-ui.js` 需要浏览器：装了 `playwright` 包就直接跑；只装 `playwright-core` 时用

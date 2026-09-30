@@ -1,17 +1,22 @@
 #!/bin/bash
 # install-web-service.sh —— 把 dsh web 装成 Termux 的 runit 守护服务
 #
-# 在设备（Termux）上运行。产物三件：
-#   1) $PREFIX/var/service/dsh-web/run        服务本体
-#   2) $PREFIX/var/service/dsh-web/log/run    svlogd 日志
-#   3) $PREFIX/bin/dsh-web-url                便捷命令：打印当前带令牌 URL
+# 在设备（Termux）上运行。产物两件：
+#   1) $SVDIR/dsh-web/run          服务本体（含凭据注入与局域网放行两块标记）
+#   2) $SVDIR/dsh-web/log/run      svlogd 日志
+#
+# ── 网关优先（gateway-first）──────────────────────────────────────
+# 本脚本不再自带 dsh-web-url：它是会变的东西（--gw/--app/--lan/--all 参数
+# 随版本长），内联一份旧的在安装器里长期踩「忘了重建」的坑。现在它由
+# install-gateway.sh 下发，这里只检查它在不在 —— 不在就是网关没装，直接拒绝。
+# 同理 dsh-lan-ip：run 脚本要用它取局域网 IP，也随网关下发。
 #
 # ── 写这个脚本踩过的坑，改动前务必读 ─────────────────────────────
 #
 #  key 事实（都在真机实测过，别再试错）：
 #    * dsh 出于安全考虑**拒绝** --host 0.0.0.0，只允许 loopback。
 #      README.zh.md「不支持绑定所有网络接口」是设计决定，不要绕过。
-#      要局域网访问只能开 SSH 隧道。
+#      局域网入口由网关（8030）/ dsh-lan 转发层接，不由 dsh 自己开。
 #    * 令牌每次启动都变（进程级随机），所以必须有 dsh-web-url 这类取值入口。
 #    * runit 的 run 脚本运行在极简环境，PATH/HOME/PREFIX 都要显式给。
 #
@@ -20,12 +25,18 @@
 #    - getprop dhcp.wlan0.ipaddress 在 Android 16 上返回空；
 #    - hostname -I 在 Termux 的 hostname 上不支持；
 #    - ifconfig wlan0（带接口名）输出为空，只有无参 ifconfig 才列得出。
+#    这一段在 bin/dsh-lan-ip 里（run 脚本直接调它，不在这里重复）。
 #
 #  heredoc 一律用**引号形式** <<'XXX'：内容逐字落盘，不做生成期展开。
 #  非引号 heredoc 是陷阱 —— 注释里只要出现反引号包住的命令名，
 #  生成时就会被真的执行并把输出塞进文件（本项目真发生过一次），
 #  awk 里的 $1/$2 也会被外层提前吃掉。引号形式下这些都是普通字符。
 #  → 代价：写进文件的路径不能靠 $PREFIX 展开，只能在运行时用 ${PREFIX:-…} 取。
+#  → 好处：同一份 run 脚本在任何 PREFIX 下都能跑，假树测试也不用改字。
+#
+#  幂等：重复执行就等于把 run 脚本重写成规范内容（两块标记都在）。
+#  install-key-path.sh / install-lan.head.sh 见到标记就跳过自己的注入步，
+#  不会再往里二次塞内容。
 
 set -eu
 
@@ -39,37 +50,70 @@ if [ ! -x "$PREFIX/bin/dsh" ]; then
   echo "✗ 找不到 $PREFIX/bin/dsh —— dsh 没装好？先装再回来。" >&2
   exit 1
 fi
+# 网关优先：这两个工具随 install-gateway.sh 下发，缺了说明网关没装
+for t in dsh-web-url dsh-lan-ip; do
+  if [ ! -x "$PREFIX/bin/$t" ]; then
+    echo "✗ 缺 $PREFIX/bin/$t —— 它随网关一起下发。先跑 install-gateway.sh。" >&2
+    exit 1
+  fi
+done
 
 echo "=== 建立服务目录 $SVC ==="
 mkdir -p "$SVC/log"
 
-echo "=== 写 run（服务本体）==="
-# 用带引号的 heredoc 会阻止 $PREFIX 等展开，这里需要展开（生成期已知），
-# 所以本段保持非引号，但内容里没有反引号、也没有 awk，不存在踩坑点。
-cat > "$SVC/run" <<RUN
+echo "=== 写 run（服务本体：基础环境 + 凭据注入 + 局域网放行）==="
+cat > "$SVC/run" <<'RUN'
 #!/data/data/com.termux/files/usr/bin/sh
 # dsh-web —— DeepSeek Harness 浏览器 UI 守护服务（termux-services / runit）
 #
-# 为什么端口写死 $PORT：runit 只在进程退出时重启，端口漂移会让上次打印的
+# 为什么端口写死：runit 只在进程退出时重启，端口漂移会让上次打印的
 # URL 与本次不一致；固定端口 + dsh-web-url 才自洽。
 #
 # 为什么只用 loopback：dsh 主动拒绝 --host 0.0.0.0（安全设计）。
-# 要从电脑访问就开 SSH 隧道，不要改这里：
-#   ssh -N -L $PORT:127.0.0.1:$PORT -p 8022 u0_a383@<手机IP>
+# 要从电脑访问就开 SSH 隧道，或走网关 / dsh-lan 转发，不要改这里：
+#   ssh -N -L 3080:127.0.0.1:3080 -p 8022 u0_a383@<手机IP>
 #
 # 令牌每次启动都不同，用 dsh-web-url 取当前值。
+# 本文件由 install-web-service.sh 生成，两块标记（credentials / lan-trust）
+# 是 install-key-path.sh 与 install-lan.head.sh 的跳过依据，别手动改格式。
 
-export PREFIX="$PREFIX"
-export HOME="$HOME_DIR"
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+export HOME="${HOME:-/data/data/com.termux/files/home}"
 export PATH="$PREFIX/bin:$PREFIX/bin/applets"
-export TMPDIR="$PREFIX/tmp"
+export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
 export LANG="en_US.UTF-8"
-export DSH_HOME="$HOME_DIR/.dsh"
+export DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 
-cd "$HOME_DIR" || exit 1
-exec "$PREFIX/bin/dsh" web --port $PORT --no-open
+# termux-dsh-credentials: 模型凭据的唯一注入点（由 dsh-set-key 维护，缺失则跳过）。
+#   dsh 的模型凭据优先级：provider 管理的 .credentials.yaml > 这里是环境变量
+#   没有 api-key 记录时走环境变量，所以这一行就是唯一的 key 来源。
+ENVFILE="${SVDIR:-$PREFIX/var/service}/dsh-web/environment"
+if [ -f "$ENVFILE" ]; then . "$ENVFILE"; fi
+
+cd "$HOME" || exit 1
+# termux-dsh-lan-trust: 让局域网的 authority 通过 /api 的 Host/Origin 围栏。
+#   dsh 只绑 127.0.0.1（0.0.0.0 被官方显式拒绝），局域网入口由网关 / dsh-lan 的
+#   转发层接进来，于是浏览器看到的 authority 是 <lan-ip>:<端口>。--trusted-host 收
+#   端口无关的 IP 字面量（匹配任意端口），正好覆盖这个场景。
+#   取不到 IP 时不加该参数：服务照常起，只是局域网下 /api 会 403。
+LANIP=""
+_n=0
+while [ "$_n" -lt 15 ]; do
+  LANIP="$(dsh-lan-ip 2>/dev/null || true)"
+  [ -n "$LANIP" ] && break
+  _n=$((_n + 1)); sleep 2
+done
+if [ -n "$LANIP" ]; then
+  echo "dsh-web: --trusted-host $LANIP"
+else
+  echo "dsh-web: 警告：取不到局域网 IP，未加 --trusted-host（局域网下 /api 会 403）"
+fi
+set -- --port "${DSH_WEB_PORT:-3080}" --no-open
+[ -n "$LANIP" ] && set -- "$@" --trusted-host "$LANIP"
+exec "$PREFIX/bin/dsh" web "$@"
 RUN
 chmod 755 "$SVC/run"
+sh -n "$SVC/run" && echo "  run 语法 OK"
 
 echo "=== 写 log/run（svlogd）==="
 cat > "$SVC/log/run" <<'LOGRUN'
@@ -81,82 +125,11 @@ exec svlogd -tt "$D/sv/$service"
 LOGRUN
 chmod 755 "$SVC/log/run"
 
-echo "=== 写便捷命令 $PREFIX/bin/dsh-web-url ==="
-cat > "$PREFIX/bin/dsh-web-url" <<'URLSH'
-#!/data/data/com.termux/files/usr/bin/sh
-# dsh-web-url —— 打印当前 dsh web 的带令牌访问 URL
-#
-#   dsh-web-url           只打印 URL（Termux 终端里可直接点击打开）
-#   dsh-web-url --open    顺带用系统浏览器打开
-#   dsh-web-url --tunnel  顺带打印从电脑访问的 SSH 隧道命令
-#
-# 令牌每次启动都会变，所以永远从日志里取最新，不要缓存。
-
-PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-LOGDIR="${LOGDIR:-$PREFIX/var/log}"
-LOG="$LOGDIR/sv/dsh-web/current"
-
-if [ ! -e "$LOG" ]; then
-  echo "✗ 日志不存在：$LOG" >&2
-  echo "  服务没启动？试： sv status dsh-web   /   sv up dsh-web" >&2
-  exit 1
-fi
-
-URL=$(grep -aoE 'http://[^[:space:]]+token=[A-Za-z0-9_-]+' "$LOG" 2>/dev/null | tail -1)
-
-if [ -z "$URL" ]; then
-  echo "✗ 日志里还没有带令牌的 URL（服务可能刚重启或启动失败）。" >&2
-  echo "  --- 日志尾部 ---" >&2
-  tail -25 "$LOG" >&2
-  exit 1
-fi
-
-echo "$URL"
-
-# 取本机局域网地址。可用手段只剩「无参 ifconfig + 自己按接口块解析」：
-#   · Termux 默认没有 iproute2，'ip' 命令不存在；
-#   · 'getprop dhcp.wlan0.ipaddress' 在 Android 16 上返回空；
-#   · 'hostname -I' 在 Termux 的 hostname 上不支持；
-#   · 'ifconfig wlan0'（带接口名）输出为空，只有无参 ifconfig 才列得出。
-# 优先用 SSH_CONNECTION（第 3 个字段就是本机地址）；否则解析无参 ifconfig。
-lan_ip() {
-  if [ -n "${SSH_CONNECTION:-}" ]; then
-    set -- $SSH_CONNECTION
-    if [ -n "${3:-}" ]; then printf '%s\n' "$3"; return; fi
-  fi
-  ifconfig 2>/dev/null | awk '
-    /^[A-Za-z0-9_.]+:/ { n = $1; sub(/:.*/, "", n) }
-    /inet / {
-      ip = $2; sub(/^addr:/, "", ip)
-      if (n == "wlan0") { print ip; exit }
-      if (ip != "127.0.0.1" && n != "vgate0" && fb == "") fb = ip
-    }
-    END { if (fb != "") print fb }
-  ' 2>/dev/null | head -1
-}
-
-case "${1:-}" in
-  --open)
-    termux-open-url "$URL" >/dev/null 2>&1 || echo "(termux-open-url 打开失败，请手动点击上面的链接)" >&2
-    ;;
-  --tunnel)
-    PORT=$(printf '%s' "$URL" | sed -n 's|.*127\.0\.0\.1:\([0-9]*\)/.*|\1|p')
-    [ -z "$PORT" ] && PORT=3080
-    IP=$(lan_ip)
-    [ -z "$IP" ] && IP="<手机IP：跑 ifconfig 看 wlan0 那块的 inet>"
-    echo ""
-    echo "在电脑上执行（保持这个终端开着）："
-    echo "  ssh -N -L $PORT:127.0.0.1:$PORT -p 8022 ${USER:-$(whoami)}@$IP"
-    echo ""
-    echo "然后把上面 URL 里的 127.0.0.1 原样粘到电脑浏览器（隧道已把它接到手机）。"
-    echo "注意：dsh 主动拒绝 --host 0.0.0.0（安全设计），所以只能走隧道，不能直接开局域网端口。"
-    ;;
-esac
-
-exit 0
-URLSH
-chmod 755 "$PREFIX/bin/dsh-web-url"
+# down 文件在就清掉：有它 runsv 不会拉服务（先装时绝不该带着）
+rm -f "$SVC/down"
 
 echo
 echo "=== 装好了 ==="
-ls -la "$SVC" "$SVC/log" "$PREFIX/bin/dsh-web-url"
+ls -la "$SVC" "$SVC/log"
+echo
+echo "下一步：网关里点「继续安装」会自己 sv up；手工起就：  sv up dsh-web"

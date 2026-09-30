@@ -17,7 +17,8 @@
 # 服务端那道 Host/Origin 围栏（isTrustedApiRequest）不受影响，
 # 仍由 --trusted-host 控制，鉴权仍要 cookie。
 set -u
-export PREFIX=/data/data/com.termux/files/usr
+# 环境变量可覆盖：网关的安装 / 升级流程在假树上测试时要用别的 PREFIX（tests/test-gateway.sh）
+export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PATH="$PREFIX/bin:$PREFIX/bin/applets:$PATH"
 
 D="$PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai"
