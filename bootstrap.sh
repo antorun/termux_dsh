@@ -29,6 +29,9 @@ command -v python3 >/dev/null 2>&1 || { echo "✗ 缺 python3（构建安装器�
 
 WORK="$TMPDIR/dsh-boot-$(date +%s)"
 mkdir -p "$WORK" || { echo "✗ 建不了工作目录 $WORK"; exit 1; }
+# 下载 URL 带同一时间戳：绕过 raw 的 CDN 缓存，保证 16 个文件来自同一时刻的
+# 快照，不会出现「A 文件已是新版、B 文件还是旧版」的混合状态
+TS=$(date +%s)
 
 # 与 install/build-install-gateway.py 的 PAYLOADS 保持一致（新增 payload 时两处同步改；
 # 漏了的话构建器会用「缺文件: ...」明确报错，不会静默装成旧的）
@@ -56,7 +59,7 @@ i=0
 total=$(printf '%s\n' "$FILES" | grep -c .)
 for f in $FILES; do
   i=$((i + 1))
-  if mkdir -p "$(dirname "$f")" && curl -fsSL --retry 2 -m 40 -o "$f" "$RAW/$REF/$f"; then
+  if mkdir -p "$(dirname "$f")" && curl -fsSL --retry 2 -m 40 -o "$f" "$RAW/$REF/$f?${TS}"; then
     sz=$(wc -c <"$f" 2>/dev/null || echo 0)
     if [ "$sz" -gt 0 ]; then
       printf '  [%2d/%2d] %-42s %s 字节\n' "$i" "$total" "$f" "$sz"
