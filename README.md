@@ -66,7 +66,7 @@ dsh 本体是为 glibc Linux / macOS / Windows 构建的，在 Android 上会连
 |---|---|
 | 系统 | Android 7.0+，**不需要 root** |
 | Termux | 从 **F-Droid 或 GitHub Releases** 装；应用商店里的版本已停更，不要用 |
-| 网络 | 能访问 GitHub raw（拉源文件）、npm registry（装 dsh 本体，约 300 MB） |
+| 网络 | 能访问 GitHub raw **或** jsdelivr 镜像（拉源文件，二选一即可）、npm registry（装 dsh 本体，约 300 MB） |
 | 空间 | 约 500 MB（依赖包 + dsh npm 包 + 补丁备份） |
 | 手 | 会粘贴一行命令 |
 | 浏览器 | 局域网内任意设备（手机 / 电脑）都行 |
@@ -81,7 +81,17 @@ Termux 里粘贴这一行：
 
     curl -fsSL https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | bash
 
-指定分支 / tag / commit：行尾加 `bash -s <ref>`（如 `bash -s v0.2`）。
+**国内网络装不上**（raw 超时）就走国内镜像：
+
+    curl -fsSL https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | DSH_MIRROR=cn bash
+
+源站说明：拉源文件时先问一下（curl 管道跑没法问，默认「自动」依次试 raw →
+jsdelivr 镜像）。环境变量 `DSH_MIRROR` 指定就不问：`cn`（国内镜像优先，raw 兜底）、
+`raw`（只用原始源，有代理 / 海外）、`auto`（自动，默认）。自建镜像用 `DSH_RAW`
+整个覆盖，如 `DSH_RAW=http://192.168.1.10:8000 bash …`。
+
+指定分支 / tag / commit：行尾加 `bash -s <ref>`（如 `bash -s v0.2`）。git clone
+下来在仓库里直接 `bash bootstrap.sh` 也可以，同样的源站选择。
 
 **它会做什么**（全过程一条命令，几分钟）：
 
@@ -102,9 +112,9 @@ Termux 里粘贴这一行：
 
 > 为什么不直接下载一个现成的安装器：`install-gateway.sh` 是生成物，按项目规矩
 > 不入版本库（改了 payload 忘重建、产物里长期内联旧版本的亏吃过）。bootstrap
-> 拉源当场构建，永远和仓库一致。raw 网络不通时的备选：`git clone` 后在仓库里
-> 跑同一条命令（失败时脚本会提示）。推送新版本后 raw 有约 3 分钟 CDN 滞后，
-> 想立刻拿到最新版就等几分钟再跑。
+> 拉源当场构建，永远和仓库一致。raw 网络不通时的备选：`DSH_MIRROR=cn` 走国内
+> 镜像，或 `git clone` 后在仓库里跑同一条命令（失败时脚本会提示）。推送新版本后
+> raw / jsdelivr 各有几分钟 CDN 滞后，想立刻拿到最新版就等几分钟再跑。
 
 > **依赖装不上怎么办**：报错里若出现 `gtk3` / `libdecor` / `sdl2` /
 > `shared-mime-info` 之类，多半是设备上有「上次没配完的包」—— 任何 apt

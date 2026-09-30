@@ -172,14 +172,49 @@ install/build-install-gateway.py"
 total=$(printf '%s\n' "$FILES" | grep -c .)
 
 # 源站候选（URL 模板：%R = ref，%F = 文件路径）。
-# raw.githubusercontent 在国内网络经常抽风（40 秒超时），拉空了就自动换
-# jsdelivr 镜像接着试；DSH_RAW 指定了就只用它（自建镜像 / 本地调试）。
+# raw.githubusercontent 在国内网络经常抽风（40 秒超时）；jsdelivr 镜像反过来
+# 有缓存滞后。所以：交互式跑就问一次要哪个；管道跑（curl|bash）默认 auto。
+# DSH_RAW 指定了就只用它（自建镜像 / 本地调试，不问）。
 if [ -n "${DSH_RAW:-}" ]; then
+  MIRROR_NAME="自建镜像（DSH_RAW）"
   TEMPLATES=("$DSH_RAW/%R/%F")
 else
-  TEMPLATES=("https://raw.githubusercontent.com/antorun/termux_dsh/%R/%F"
-             "https://cdn.jsdelivr.net/gh/antorun/termux_dsh@%R/%F")
+  if [ -z "${DSH_MIRROR:-}" ]; then
+    if [ -t 0 ]; then
+      echo "  源站选择（从哪拉源文件）："
+      echo "    1) 国内镜像（jsdelivr 优先，raw 兜底）—— 国内网络推荐"
+      echo "    2) 原始源（只用 raw.githubusercontent.com）—— 有代理 / 海外"
+      echo "    3) 自动（先 raw 后 jsdelivr）—— 默认"
+      printf '    输入 1/2/3，15 秒不选走 3：'
+      read -t 15 -n 1 MIRROR_ANS 2>/dev/null
+      echo
+      case "$MIRROR_ANS" in
+        1) DSH_MIRROR=cn ;;
+        2) DSH_MIRROR=raw ;;
+        *) DSH_MIRROR=auto ;;
+      esac
+    else
+      DSH_MIRROR=auto
+    fi
+  fi
+  case "$DSH_MIRROR" in
+    cn|china|mirror|jsdelivr)
+      MIRROR_NAME="国内镜像（jsdelivr 优先，raw 兜底）"
+      TEMPLATES=("https://cdn.jsdelivr.net/gh/antorun/termux_dsh@%R/%F"
+                 "https://raw.githubusercontent.com/antorun/termux_dsh/%R/%F")
+      ;;
+    raw|origin|github)
+      MIRROR_NAME="原始源（raw.githubusercontent.com）"
+      TEMPLATES=("https://raw.githubusercontent.com/antorun/termux_dsh/%R/%F")
+      ;;
+    *)
+      MIRROR_NAME="自动（先 raw 后 jsdelivr）"
+      TEMPLATES=("https://raw.githubusercontent.com/antorun/termux_dsh/%R/%F"
+                 "https://cdn.jsdelivr.net/gh/antorun/termux_dsh@%R/%F")
+      ;;
+  esac
 fi
+line "源站" "$MIRROR_NAME"
 
 cd "$WORK" || exit 1
 ok=0

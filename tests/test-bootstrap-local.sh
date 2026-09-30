@@ -81,8 +81,9 @@ mkstub "$T/bin/python3" 'exec '"$PY"' "$@"'
 
 # bootstrap 的 PATH 是 $PREFIX/bin 优先 —— 造假 $HOME 下的 .dsh 备份也会落在 H。
 run_boot() {  # run_boot [bootstrap 的参数...] —— REF 用 "." 走本地源的 /./ 路径
+  # stdin 给 /dev/null：bootstrap 只在「stdin 是 tty」时才问源站，测试别卡住
   PREFIX="$T" HOME="$H" TMPDIR="$T/tmp" FAKE_PGREP_FILE="$FAKE_PGREP_FILE" \
-    bash "$ROOT/bootstrap.sh" "$@" 2>&1
+    bash "$ROOT/bootstrap.sh" "$@" </dev/null 2>&1
 }
 
 # ============================== A) happy path ==============================

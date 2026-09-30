@@ -1344,9 +1344,13 @@ Windows 的 `python3` 常是应用商店残桩（`command -v` 认得但执行无
 顺带把 bootstrap 的 `setsid runsvdir` 做了无 setsid 回退（git bash
 就没有 setsid，Termux 上不受影响）。
 
-另外给第 3 步加了**源站自动回退**：默认依次试 raw.githubusercontent
-和 jsdelivr 镜像（URL 模板 `%R`/`%F` 占位），第一个源拉不齐就清掉
-残缺文件换下一个；全失败了才报「所有源站都没拉齐」并提示
-`DSH_RAW=http://…` 自建镜像和 git clone 备选。起因就是部署时撞上
-raw 抽风 —— 40 秒超时 × 16 个文件，用户体验极差，而换源后一行命令
-就过了。
+另外给第 3 步加了**源站选择 + 自动回退**：拉源文件的 URL 用模板
+（`%R`/`%F` 占位），默认依次试 raw.githubusercontent 和 jsdelivr 镜像，
+第一个源拉不齐就清掉残缺文件换下一个，全失败才报「所有源站都没拉齐」
+并提示 `DSH_RAW=http://…` 自建镜像与 git clone 备选。在此之上，交互式
+跑（git clone 下来在终端里跑）会先问一下用哪个源 —— 1) 国内镜像
+（jsdelivr 优先，raw 兜底）2) 原始源（只用 raw）3) 自动（默认）；curl
+管道跑（如一键安装）stdin 不是 tty，不问、走自动。也可用环境变量
+`DSH_MIRROR=cn|raw|auto` 直接指定（README 一键安装段给了国内源的一键
+命令）。起因就是部署时撞上 raw 抽风 —— 40 秒超时 × 16 个文件；换源后
+一行命令就过。真机四种路径（cn / raw / auto / 交互选 1）都验过。
