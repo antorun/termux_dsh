@@ -90,6 +90,21 @@ jsdelivr 镜像）。环境变量 `DSH_MIRROR` 指定就不问：`cn`（国内�
 `raw`（只用原始源，有代理 / 海外）、`auto`（自动，默认）。自建镜像用 `DSH_RAW`
 整个覆盖，如 `DSH_RAW=http://192.168.1.10:8000 bash …`。
 
+可调项（都不写就用默认值）：
+
+| 变量 | 作用 |
+|---|---|
+| `DSH_MIRROR` | 源站：`cn` / `raw` / `auto`（默认） |
+| `DSH_RAW` | 整个源站换成一个 base URL（自建镜像 / 内网部署） |
+| `DSH_REPO` | 仓库 `owner/name`（默认 `antorun/termux_dsh`）—— fork 后部署直接用 |
+| `DSH_FILES` | 拉取清单（换行分隔的相对路径；默认那 16 个，与构建器 PAYLOADS 一致） |
+| `DSH_CHANNEL` | `latest` / `next` / `alpha`，装哪个通道的 dsh |
+| `DSH_VERSION` | 手填 dsh 版本号，优先于通道 |
+
+装的过程有进度：pkg 装依赖时单行心跳（已用秒数 + pkg 日志最后一行实时滚），
+拉源文件时逐个计数（`[ 3/16] 路径 大小`），装 dsh 时 npm 输出实时滚、
+安静期每 10 秒报一次「还在动」。
+
 指定分支 / tag / commit：行尾加 `bash -s <ref>`（如 `bash -s v0.2`）。git clone
 下来在仓库里直接 `bash bootstrap.sh` 也可以，同样的源站选择。
 
@@ -217,6 +232,9 @@ bash uninstall.sh -y --all    # 全拆：连 dsh 包 / 用户数据 / 工作目�
 ## 测试
 
 ```bash
+# 安装器里内联的轮询 JS（heredoc，不是独立文件）单独 node --check
+bash tests/check-poll.sh                            # 期望「poll.js 语法 OK」
+
 # bootstrap 本地回归（造假 Termux 树 + 本地 http 源，三条路径：happy / 软依赖降级 /
 # 硬依赖失败退出）—— 不需要真机，git bash / linux / mac 都能跑
 bash tests/test-bootstrap-local.sh        # 期望「失败 0 项」（18 项）

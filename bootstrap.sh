@@ -7,6 +7,15 @@
 # 指定分支 / tag / commit：
 #   curl -fsSL https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | bash -s v0.2
 #
+# 所有地址 / 清单都不写死，用环境变量覆盖（fork、自建镜像、内网部署直接用）：
+#   DSH_REPO=owner/name   仓库（默认 antorun/termux_dsh），模板和 git clone 回退都从它派生
+#   DSH_MIRROR=cn|raw|auto  源站：国内镜像 / 原始源 / 自动（默认；交互式跑会问一次）
+#   DSH_RAW=http://…      整个源站用一个 base URL 覆盖（自建镜像 / 本地调试）
+#   DSH_FILES='a
+# b'                     拉取清单覆盖（换行分隔；默认那 16 个）
+#   DSH_BUILD_ONLY=1      只构建 install-gateway.sh 不执行（调试用）
+#   DSH_CHANNEL / DSH_VERSION  传给安装器：装哪个版本的 dsh
+#
 # 做四件事：
 #   1. pkg update + 装齐依赖（curl / python / nodejs-lts / termux-services /
 #      clang / make / cmake / ninja —— dsh 0.2.0+ 的 koffi 原生编译要后面四个）
@@ -29,6 +38,8 @@ export SVDIR="${SVDIR:-$PREFIX/var/service}"
 export LOGDIR="${LOGDIR:-$PREFIX/var/log}"
 
 REF="${1:-main}"
+# 仓库身份：默认本仓库。fork / 私有部署 / 自建镜像整机覆盖都能用 DSH_REPO。
+DSH_REPO="${DSH_REPO:-antorun/termux_dsh}"
 # 源站模板在下面第 3 步（默认 raw + jsdelivr 回退；DSH_RAW 指定就只用它，
 # 用于自建镜像 / 本地调试，如 DSH_RAW=http://127.0.0.1:8123）
 
@@ -42,6 +53,25 @@ step() { printf '\n== %s ==\n' "$1"; }
 line() { printf '    %-22s %s\n' "$1" "$2"; }
 say() { printf '    %s\n' "$1"; }
 
+# 长任务放后台跑，前台单行实时刷新（已用秒数 + 日志最后一行）。
+# pkg 的输出几百行扔进日志：既不刷屏，又一眼知道它在动、动到哪了。
+# 返回值就是那条命令的退出码。
+run_bg() {  # run_bg <日志> <说明(≤10字)> <命令…>
+  local log="$1" msg="$2"; shift 2
+  local pid t0 el last
+  "$@" >>"$log" 2>&1 &
+  pid=$!
+  t0=$(date +%s)
+  while kill -0 "$pid" 2>/dev/null; do
+    el=$(( $(date +%s) - t0 ))
+    last=$(tail -c 300 "$log" 2>/dev/null | tr '\r' '\n' | grep -v '^$' | tail -1 | cut -c1-56)
+    printf '\r      %-10s %3ds  %s' "$msg" "$el" "${last:-（等输出）}"
+    sleep 2
+  done
+  printf '\r\033[K'   # 擦掉心跳行（VT100 清行）
+  wait "$pid"
+}
+
 step "0/4 检查运行环境"
 if [ ! -x "$PREFIX/bin/pkg" ]; then
   echo "✗ 这个脚本只能在 Termux 里跑（找不到 $PREFIX/bin/pkg）。"
@@ -51,8 +81,8 @@ fi
 say "Termux 环境 OK（PREFIX=$PREFIX）"
 
 step "1/4 更新软件源 + 装依赖"
-# pkg 的输出几百行，只留结果；日志留着排查用。
-if pkg update -y >"$WORK/pkg-update.log" 2>&1; then
+# pkg 的输出几百行，只留结果；日志留着排查用（run_bg 心跳行实时滚最后一行）。
+if run_bg "$WORK/pkg-update.log" "pkg update" pkg update -y; then
   line "pkg update" "ok"
 else
   line "pkg update" "失败（不影响，源文件还没拉）"
@@ -83,12 +113,12 @@ if [ -n "$ALLMISS" ]; then
   # 配完它们，配不上就整个事务失败 —— 跟我们要装的包无关（报错里若出现
   # gtk3 / libdecor / sdl2 / shared-mime-info 就是这个）。--configure -a 一把
   # 收拾半成品，再重试一次。
-  if pkg install -y $ALLMISS >"$WORK/pkg-install.log" 2>&1; then
+  if run_bg "$WORK/pkg-install.log" "装依赖" pkg install -y $ALLMISS; then
     line "pkg install" "ok"
   else
     say "第一次失败，dpkg --configure -a 收拾半成品后重试……"
-    dpkg --configure -a >>"$WORK/pkg-install.log" 2>&1 || true
-    if pkg install -y $ALLMISS >>"$WORK/pkg-install.log" 2>&1; then
+    run_bg "$WORK/pkg-install.log" "dpkg 收拾" dpkg --configure -a || true
+    if run_bg "$WORK/pkg-install.log" "装依赖重试" pkg install -y $ALLMISS; then
       line "pkg install" "ok（重试后成功）"
     elif [ -z "$MISSING" ]; then
       # 缺的只是 cmake/ninja：网关、控制台、低版本 dsh 都不需要它们
@@ -96,7 +126,7 @@ if [ -n "$ALLMISS" ]; then
       echo "  ! cmake / ninja 没装上 —— 只有 dsh 0.2.0+ 的 koffi 原生编译要它。"
       echo "    网关和控制台照装；之后在控制台装 dsh 时要是卡在 koffi，再补："
       echo "      pkg install -y cmake ninja"
-    elif pkg install -y $MISSING >>"$WORK/pkg-install.log" 2>&1; then
+    elif run_bg "$WORK/pkg-install.log" "只装硬依赖" pkg install -y $MISSING; then
       line "pkg install" "核心依赖 ok；cmake/ninja 装不上（重试已跳过）"
       echo "  ! cmake / ninja 没装上 —— 只有 dsh 0.2.0+ 的 koffi 原生编译要它。"
       echo "    之后在控制台装 dsh 时要是卡在 koffi，再补：pkg install -y cmake ninja"
@@ -151,8 +181,9 @@ step "3/4 拉源文件（ref=${REF}）→ $WORK"
 TS=$(date +%s)
 
 # 与 install/build-install-gateway.py 的 PAYLOADS 保持一致（新增 payload 时两处同步改；
-# 漏了的话构建器会用「缺文件: ...」明确报错，不会静默装成旧的）
-FILES="bin/dsh-ctl-gateway
+# 漏了的话构建器会用「缺文件: ...」明确报错，不会静默装成旧的）。
+# fork 加了文件可用 DSH_FILES 覆盖（换行分隔的相对路径）。
+FILES="${DSH_FILES:-bin/dsh-ctl-gateway
 share/dsh-ctl/panel.html
 bin/dsh-web-url
 bin/dsh-patch-lan-settings
@@ -167,7 +198,7 @@ install/uninstall.sh
 install/install-web-service.sh
 runit/dsh-ctl-run
 install/install-gateway.head.sh
-install/build-install-gateway.py"
+install/build-install-gateway.py}"
 
 total=$(printf '%s\n' "$FILES" | grep -c .)
 
@@ -200,17 +231,17 @@ else
   case "$DSH_MIRROR" in
     cn|china|mirror|jsdelivr)
       MIRROR_NAME="国内镜像（jsdelivr 优先，raw 兜底）"
-      TEMPLATES=("https://cdn.jsdelivr.net/gh/antorun/termux_dsh@%R/%F"
-                 "https://raw.githubusercontent.com/antorun/termux_dsh/%R/%F")
+      TEMPLATES=("https://cdn.jsdelivr.net/gh/$DSH_REPO@%R/%F"
+                 "https://raw.githubusercontent.com/$DSH_REPO/%R/%F")
       ;;
     raw|origin|github)
       MIRROR_NAME="原始源（raw.githubusercontent.com）"
-      TEMPLATES=("https://raw.githubusercontent.com/antorun/termux_dsh/%R/%F")
+      TEMPLATES=("https://raw.githubusercontent.com/$DSH_REPO/%R/%F")
       ;;
     *)
       MIRROR_NAME="自动（先 raw 后 jsdelivr）"
-      TEMPLATES=("https://raw.githubusercontent.com/antorun/termux_dsh/%R/%F"
-                 "https://cdn.jsdelivr.net/gh/antorun/termux_dsh@%R/%F")
+      TEMPLATES=("https://raw.githubusercontent.com/$DSH_REPO/%R/%F"
+                 "https://cdn.jsdelivr.net/gh/$DSH_REPO@%R/%F")
       ;;
   esac
 fi
@@ -226,18 +257,22 @@ for tpl in "${TEMPLATES[@]}"; do
   fail=0
   got=0
   bytes=0
+  n=0
   for f in $FILES; do
     url="${urlbase/\%F/$f}"
+    n=$((n + 1))
     if mkdir -p "$(dirname "$f")" && curl -fsSL --retry 2 -m 40 -o "$f" "$url?${TS}"; then
       sz=$(wc -c <"$f" 2>/dev/null || echo 0)
       if [ "$sz" -gt 0 ]; then
         got=$((got + 1)); bytes=$((bytes + sz))
+        printf '      [%2d/%d] %-34s %6d KB\n' "$n" "$total" "$f" "$((sz / 1024))"
       else
-        echo "  ✗ 拉下来是空文件：$f"
+        printf '      [%2d/%d] %-34s ✗ 空文件\n' "$n" "$total" "$f"
         fail=1
       fi
     else
-      echo "  ✗ 拉不到：$url"
+      printf '      [%2d/%d] %-34s ✗ 拉不到\n' "$n" "$total" "$f"
+      say "          $url"
       fail=1
     fi
   done
@@ -255,8 +290,8 @@ if [ "$ok" != 1 ]; then
   echo
   echo "✗ 所有源站都没拉齐。检查网络，或指定自建镜像：DSH_RAW=http://… bash。"
   echo "  备选（走 github.com 而不是 raw）："
-  echo "    git clone --depth 1 https://github.com/antorun/termux_dsh.git"
-  echo "    cd termux_dsh && bash bootstrap.sh"
+  echo "    git clone --depth 1 https://github.com/$DSH_REPO.git"
+  echo "    cd $(basename "$DSH_REPO") && bash bootstrap.sh"
   exit 1
 fi
 

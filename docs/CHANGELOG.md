@@ -1341,6 +1341,21 @@ msys 上半残（改用 REF="." 让 http.server 自己吃掉路径里的 `.` 段
 Windows 的 `python3` 常是应用商店残桩（`command -v` 认得但执行无效，
 探测时必须真跑一下）。
 
+**全程进度条**：用户反馈「运行后卡很久没进度条」——四个静默段都补上了：
+
+- pkg update / install / `dpkg --configure -a`：后台跑 + 前台单行心跳
+  （已用秒数 + 日志最后一行实时滚，`\r` 原地刷新不刷屏，完工清行）；
+- 拉源文件：逐个计数 `[ 3/16] 路径 大小`，失败也有计数行；
+- 安装器等服务 / 等端口：每 5 秒一个节拍行；
+- 装 dsh 的轮询脚本：npm 安静期（拉大包 / 解压几分钟不刷行）每 10 秒
+  报一次「已用 Xs，等着」，install 接口查 registry 定版本期间同样报。
+
+**通用化**：bootstrap 的仓库身份、源站、文件清单全部参数化 ——
+`DSH_REPO=owner/name`（默认本仓库，模板与 git clone 回退都从它派生）、
+`DSH_FILES`（换行分隔的拉取清单，默认与构建器 PAYLOADS 一致）、
+`DSH_MIRROR` / `DSH_RAW`（源站）、`REF` 位置参数（分支 / tag / commit）。
+fork、自建镜像、内网部署不改脚本就能用。
+
 顺带把 bootstrap 的 `setsid runsvdir` 做了无 setsid 回退（git bash
 就没有 setsid，Termux 上不受影响）。
 

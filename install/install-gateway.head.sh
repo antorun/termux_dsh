@@ -174,6 +174,7 @@ for i in $(seq 1 25); do
   case "$(sv status dsh-ctl 2>/dev/null | tr -d '\r')" in
     run:*) UP=1; break ;;
   esac
+  [ $((i % 5)) = 0 ] && printf '    [%2d/25] 等 dsh-ctl 起来（runsv 认新服务最多 5 秒）…\n' "$i"
   sleep 1
 done
 sv status dsh-ctl 2>/dev/null | sed 's/^/  /'
@@ -212,6 +213,7 @@ if [ "$HAVE_CURL" = 1 ]; then
   for i in $(seq 1 15); do
     code=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "$BASE/ctl" 2>/dev/null || true)
     [ "$code" != "000" ] && [ -n "$code" ] && break
+    [ $((i % 5)) = 0 ] && printf '    [%2d/15] 网关端口还没应答…\n' "$i"
     sleep 1
   done
 
@@ -273,7 +275,8 @@ const t0 = Date.now()
 let shown = 0
 let jobSeen = false
 let errSince = 0
-let retried = false
+let startTries = 0
+let lastBeat = 0      // 安静期心跳：npm 拉大包 / 解压时几分钟不刷行，得让用户知道还在动
 
 // BASE 地址不能解析是永久错误，不进重试循环。
 try { new URL(base) } catch (e) {
@@ -333,7 +336,11 @@ function startInstall() {
   post('/ctl/api/install', want, 60000, (err, r) => {
     if (err || !r || r.code >= 500) {
       if (Date.now() - t0 < START_DEADLINE_MS) {
-        if (!retried) { retried = true; out('⏳ 网关还没应答，重试中（最多 60 秒）……') }
+        startTries++
+        if (startTries % 5 === 1) {   // 每 ~10 秒报一次「还在等」，不刷屏
+          out('⏳ 网关还没应答（install 接口要先查 npm registry 定版本），已用 ' +
+            Math.round((Date.now() - t0) / 1000) + 's，重试中（最多 60 秒）……')
+        }
         return setTimeout(startInstall, 2000)
       }
       return finish(false, '', '连不上网关的 install 接口：' +
@@ -365,6 +372,12 @@ function poll(jobId) {
         if (job.lines.length < shown) shown = 0   // 快照截头了（>160 行/2 秒），重打一遍
         for (; shown < job.lines.length; shown++) out('  ' + job.lines[shown])
       }
+      // 安静期心跳：npm 拉大包 / 解压时几分钟没新行，每 10 秒报一次「还活着」
+      if ((!job.lines || job.lines.length === shown) && Date.now() - lastBeat > 10000) {
+        lastBeat = Date.now()
+        out('⏳ npm 安静期（下大包 / 解压不刷行），已用 ' +
+          Math.round((Date.now() - t0) / 1000) + 's，等着……')
+      }
       const res = job.result || {}
       if (job.status === 'done' && res.ok) return finish(true, res.appUrl || '', '')
       if (job.status === 'failed' || (job.status === 'done' && !res.ok)) {
@@ -372,6 +385,10 @@ function poll(jobId) {
       }
     } else if (jobSeen) {
       return finish(false, '', '任务找不到了（网关重启过？）。重跑安装脚本可再试。')
+    } else if (Date.now() - lastBeat > 10000) {
+      // 任务现场还没出现（网关在查 registry 定版本）
+      lastBeat = Date.now()
+      out('⏳ 还没拿到任务现场，已用 ' + Math.round((Date.now() - t0) / 1000) + 's……')
     }
     if (Date.now() - t0 > DEADLINE_MS) {
       return finish(false, '', '等了 25 分钟还没完（npm 卡住了？）。重跑安装脚本可再试。')
