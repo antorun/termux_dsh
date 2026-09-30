@@ -162,6 +162,19 @@ curl -s -b cookie.jar -X POST -H 'Content-Type: application/json' \
 **「远端版本」不等于「更新」**：切到 `alpha` 通道时远端可能**比本机旧**（实测本机 `0.2.0-rc.2`、
 alpha 是 `0.1.7-alpha.2`）。面板会按 semver 粗比把按钮改成「**回退到** …」，别一律写「更新」。
 
+**0.2.0+ 装包时要现编 `koffi`，两件事都得有**（缺一件就装不上，见 CHANGELOG §8.8）：
+
+1. 设备要有 `cmake` + `ninja`：`pkg install -y cmake ninja`；
+2. 编译标志必须带 `--target=aarch64-unknown-linux-android30 -D_GNU_SOURCE`
+   （网关已经在装包那一步自动带上，不用手动配）。原因是 bionic 把 `statx()` 藏在
+   `#if defined(__USE_GNU) && __BIONIC_AVAILABILITY_GUARD(30)` 后面，少任一条
+   `statx(fd, …)` 里的 `statx` 就被当成**类型**，报错是
+   `cannot initialize a member subobject of type '__u32' with an lvalue of type 'const char *'`
+   —— **看着像参数类型写错，其实是函数没声明**。
+
+**升级成功后备份目录会留着**（`@deepseek-ai.bak-<ts>`，实测 305 MB），网关不自己删。
+确认新版没问题后手动清理：`rm -rf $PREFIX/lib/node_modules/@deepseek-ai.bak-*`。
+
 ---
 
 ## 安全边界
