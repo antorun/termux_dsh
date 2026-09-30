@@ -301,8 +301,15 @@ nohas "/ctl 不弹令牌表单" "$BODY" 'name="bootstrap"'
 check "/ 状态码" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/")" 200
 has "/ 也是面板" "$(curl -s -m 8 "$BASE/")" 'id="wizard"'
 
-check "/app 未登录" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/app")" 200
-has "/app 未登录给登录页" "$(curl -s -m 8 "$BASE/app")" '登录'
+# /app 路由器模型：没 cookie 时网关自动补 dsh 的登录令牌（桩 dsh-web-url 给
+# STUBTOKEN123），有 cookie 就直接取首页；令牌走不通时落回说人话的登录页
+check "/app 无 cookie 跳自动登录" \
+  "$(curl -s -m 8 -o /dev/null -w '%{redirect_url}' "$BASE/app")" "$BASE/app?token=STUBTOKEN123"
+BODY=$(curl -s -m 8 -L "$BASE/app")
+check "/app 跟随跳转 200" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -L "$BASE/app")" 200
+has "/app 落地是登录页" "$BODY" '需要先登录'
+check "/app 直贴令牌也 200" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/app?token=WHATEVER")" 200
+has "/app 令牌不通给登录页" "$(curl -s -m 8 "$BASE/app?token=WHATEVER")" '令牌没通过'
 
 check "未知 api 404" "$(postCode nosuchapi '{}')" 404
 

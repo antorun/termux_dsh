@@ -11,12 +11,12 @@
  *      从端点拉模型列表、探测每把 token 的端点健康。
  *      一个接口挂 N 把 token，dsh 里就是 N 条 "<接口>-<token>" 路由。
  *      token 的 `enabled:false` = 停用，清单里留着但不写路由。
- *   3. 未登录时给一个落地页，而不是把 dsh 的 401 甩给用户。
+ *   3. 未登录时给一个说人话的落地页，而不是把 dsh 的 401 甩给用户。
  *
  * 路由（8030 是"网关自己的入口"，dsh 主界面被挪到 /app）：
- *   /              已登录 → 控制台；未登录 → 落地页（带令牌）
+ *   /              控制台面板（路由器模型：不问令牌不问登录）
  *   /ctl[/…]       控制台别名 + 控制台 API
- *   /app           dsh 主界面（网关自己取回 index.html 再吐出，见 serveSpa）
+ *   /app           dsh 主界面：没 cookie 时自动补上 dsh 的登录令牌再进来
  *   /app/…         302 回 /app（避免相对资源按 /app/ 目录基解析而 404）
  *   其余           一律透明转发（/assets /langs /fonts /api favicon…）
  *
@@ -1805,6 +1805,11 @@ function proxy(req, res, rewrite) {
   const p = http.request(
     { host: UP_HOST, port: UP_PORT, path, method: req.method, headers: req.headers },
     (pres) => {
+      // 令牌登录失败（401/403）与其把 dsh 的裸 401 甩给浏览器，不如让调用方给个说人话的页
+      if (rewrite && rewrite.on401 && (pres.statusCode === 401 || pres.statusCode === 403)) {
+        pres.resume()
+        return rewrite.on401()
+      }
       const headers = Object.assign({}, pres.headers)
       if (rewrite && rewrite.location && headers.location) headers.location = rewrite.location
       res.writeHead(pres.statusCode || 502, headers)
@@ -1897,16 +1902,17 @@ th{color:var(--dim);font-weight:500;font-size:12px}
 </style></head><body><div class="wrap">${inner}</div></body></html>`
 }
 
-function loginPage(host) {
+function loginPage(host, note) {
   return shell('dsh 控制台 · 需登录', `
 <h1>需要先登录 dsh</h1>
 <div class="sub">控制台复用 dsh 自己的登录 cookie，不额外设第二套口令。</div>
 <div class="card">
   <p>这个浏览器还没有 <kbd>${host}</kbd> 这个地址上的有效登录。</p>
   <p class="muted">dsh 的 cookie 是<b>按 authority 绑定</b>的，所以 3080 登过不等于 8030 登过，需要在 8030 上单独走一次。</p>
+  ${note ? '<p class="muted" style="color:var(--warn)">' + note + '</p>' : ''}
   <p class="row">
-    <a href="/"><button class="primary">去网关首页拿令牌 →</button></a>
-    <a href="/app"><button>直接开 dsh 主界面</button></a>
+    <a href="/app"><button class="primary">打开 /app（自动登录）→</button></a>
+    <a href="/"><button>去控制台首页</button></a>
   </p>
 </div>`)
 }
@@ -1925,7 +1931,7 @@ function downPage(msg) {
 let server = null
 let boundHost = null
 
-function onRequest(req, res) {
+async function onRequest(req, res) {
   let url
   try { url = new URL(req.url, 'http://' + (req.headers.host || 'localhost')) }
   catch { url = { pathname: req.url.split('?')[0], searchParams: new URLSearchParams() } }
@@ -1941,7 +1947,22 @@ function onRequest(req, res) {
     if (token) {
       // 令牌必须由 dsh 自己下发（它会按 authority 种 cookie），
       // 所以把路径改写成 '/' 转发，再把 303 的落点改回 /app。
-      return proxy(req, res, { path: '/' + url.search, location: '/app' })
+      // 令牌失效时透传 dsh 的 401 没人看得懂 —— 落到登录页说明白。
+      return proxy(req, res, {
+        path: '/' + url.search, location: '/app',
+        on401: () => html(res, 200, loginPage(req.headers.host || '', '令牌没通过：可能已过期。重新打开 /app 会自动接当前令牌，或去控制台首页拿新链接。')),
+      })
+    }
+    // 路由器模型：打开 /app 直接进 —— 没带 cookie 就自取 dsh 的登录令牌
+    // 补上（readToken 跑 dsh-web-url），让 dsh 自己种好 cookie 再回来；
+    // 浏览器有 cookie（可能已登录 / 可能是过期的）就按老路取首页。
+    if (!req.headers.cookie) {
+      const t = await readToken()
+      const m = t && /token=([A-Za-z0-9_-]+)/.exec(t)
+      if (m) {
+        res.writeHead(302, { location: '/app?token=' + m[1], 'cache-control': 'no-store' })
+        return res.end()
+      }
     }
     return serveSpa(req, res)
   }

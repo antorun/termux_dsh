@@ -1122,6 +1122,18 @@ detached 子进程靠 `spawn(..., { detached: true, stdio: ['ignore', logFd, log
   `ok:true`、明文 key 计数 = 0、save 无凭据 401；收尾只打印控制台地址与
   dsh 登录链接，不再有令牌两行
 
+### `/app` 自动登录（路由器模型的最后一块拼图）
+
+打开 `http://<lan-ip>:8030/app` 不用再贴令牌链接：浏览器没 cookie 时，网关
+自己跑一次 `dsh-web-url` 拿当前登录令牌，302 到 `/app?token=…` 让 dsh
+按这个 authority 把 cookie 种好（303 落回干净的 `/app`），下一次请求就带
+cookie 直接进 SPA。已有 cookie 的请求按老路取首页（**不**画蛇添足地重走
+令牌）。令牌失效时不再把 dsh 的裸 401 甩给浏览器 —— `proxy` 加了 `on401`
+钩子，落到登录页说「令牌没通过：可能已过期」。
+
+老的 `loginPage`（未登录落地页）按钮原来指向「去网关首页拿令牌」，现在
+首页没令牌可拿了，主按钮改成「打开 /app（自动登录）」。
+
 ### 测试（T1 / T4 重写，T5 / T6 去掉令牌路径）
 
 - T1「开放模型鉴权」：`/ctl` 与 `/` 直接给面板且**没有** `name="bootstrap"`
@@ -1136,8 +1148,10 @@ detached 子进程靠 `spawn(..., { detached: true, stdio: ['ignore', logFd, log
   `ensureWebService` 跳过 `install-web-service.sh`（T2 要断言的核心路径），
   不能常驻
 
-真机 `tests/test-gateway.sh` **65 / 65 全过**（T1 14 项 + T2 21 项 + T3 6 项 +
-T4 7 项 + T5 9 项 + T6 4 项 + 结果 4 行计 65 个 check）；安装器在 Android 15 /
-node v24.18 上一遍过，自带的自检五项（面板 200 / umodal 在场 / state 无凭据
-ok / 明文 key 计数 0 / save 401）全绿。旧设备上残留的 `.bootstrap-token`
-文件已手动删除（新代码不读它，留着也只是死文件）。
+真机 `tests/test-gateway.sh` **68 / 68 全过**（新增 5 项 /app 自动登录断言：
+无 cookie 302 到 `?token=`、跟随跳转 200、落地是登录页、直贴令牌走 `on401`
+钩子给登录页），安装器在 Android 15 / node v24.18 上一遍过，自带的自检五项
+（面板 200 / umodal 在场 / state 无凭据 ok / 明文 key 计数 0 / save 401）全绿。
+旧设备上残留的 `.bootstrap-token` 文件已手动删除（新代码不读它，留着也只是
+死文件）。/app 自动登录在真机验证：无 cookie → 302 → 303 种 cookie → 落回
+干净 /app 拿到 34KB 的 dsh SPA。
