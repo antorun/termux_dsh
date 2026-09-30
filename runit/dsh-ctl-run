@@ -1,0 +1,20 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# dsh-ctl —— 局域网上的 dsh「控制台 + 入口」网关，监听 <lan-ip>:8030。
+#
+#   http://<lan-ip>:8030/          控制台（未登录时给落地页，带现取的令牌入口）
+#   http://<lan-ip>:8030/app        经网关进入 dsh 主界面（?token=… 可直接登录）
+#   http://<lan-ip>:8030/ctl        控制台别名：服务状态 / 模型后端 / 凭据 / 重启 / 自检
+#
+# 它同时是反向代理（HTTP + WebSocket 透传到 127.0.0.1:3080）和控制面。
+# /ctl 复用 dsh 自己的登录 cookie，不额外设口令。
+#
+#   sv down dsh-ctl     # 关掉这个入口（不影响 dsh-web 本体、不影响 SSH 隧道）
+#   sv up dsh-ctl       # 再打开
+
+export PREFIX="/data/data/com.termux/files/usr"
+export HOME="/data/data/com.termux/files/home"
+export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets"
+export TMPDIR="/data/data/com.termux/files/usr/tmp"
+export LANG="en_US.UTF-8"
+
+exec "$PREFIX/bin/dsh-ctl-gateway" auto 8030 127.0.0.1 3080

@@ -1,0 +1,1166 @@
+#!/data/data/com.termux/files/usr/bin/node
+/*
+ * dsh-ctl-gateway -- 局域网上的 dsh「控制台 + 入口」网关，默认监听 :8030。
+ *
+ * 它做三件事：
+ *   1. 透明反向代理到只监听 127.0.0.1 的 dsh web（HTTP + WebSocket 都透传）。
+ *      header 一个都不改 —— dsh 侧靠 `--trusted-host <lan-ip>`（端口无关的 IP
+ *      字面量）放行 /api 围栏，改 Host 反而会在 keep-alive 的后续请求上坏掉。
+ *   2. 提供 /ctl 控制台：看服务状态、管理「接口 + token」（端点 / 协议 / 每把
+ *      token 的备注、启用开关与凭据 / 模型）、重启、跑端到端自检、
+ *      从端点拉模型列表、探测每把 token 的端点健康。
+ *      一个接口挂 N 把 token，dsh 里就是 N 条 "<接口>-<token>" 路由。
+ *      token 的 `enabled:false` = 停用，清单里留着但不写路由。
+ *   3. 未登录时给一个落地页，而不是把 dsh 的 401 甩给用户。
+ *
+ * 路由（8030 是"网关自己的入口"，dsh 主界面被挪到 /app）：
+ *   /              已登录 → 控制台；未登录 → 落地页（带令牌）
+ *   /ctl[/…]       控制台别名 + 控制台 API
+ *   /app           dsh 主界面（网关自己取回 index.html 再吐出，见 serveSpa）
+ *   /app/…         302 回 /app（避免相对资源按 /app/ 目录基解析而 404）
+ *   其余           一律透明转发（/assets /langs /fonts /api favicon…）
+ *
+ * 写入一律通过设备上已回归过的 dsh-set-provider / dsh-set-key 完成
+ * （spawn argv 数组，不过 shell，杜绝命令注入），网关自己只读。
+ *
+ * 鉴权：/ctl 要求 dsh 自己的登录 cookie。判定方式是把请求原样探到
+ * dsh 的 /api/__ctl_probe —— 围栏+鉴权都过时该路径会回 404（路由不存在），
+ * 401=没登录、403=围栏拒绝。这样控制台的安全级别与 dsh UI 本体一致，
+ * 不额外引入第二套口令。
+ *
+ * 用法: dsh-ctl-gateway <listenHost|auto> <listenPort> <upstreamHost> <upstreamPort>
+ */
+'use strict'
+
+const http = require('http')
+const https = require('https')
+const net = require('net')
+const fs = require('fs')
+const os = require('os')
+const { execSync, execFile, spawn } = require('child_process')
+
+const argv = process.argv.slice(2)
+if (argv.length < 4) {
+  console.error('用法: dsh-ctl-gateway <listenHost|auto> <listenPort> <upstreamHost> <upstreamPort>')
+  process.exit(2)
+}
+const LISTEN_HOST = argv[0]
+const LISTEN_PORT = Number(argv[1])
+const UP_HOST = argv[2]
+const UP_PORT = Number(argv[3])
+
+const PREFIX = process.env.PREFIX || '/data/data/com.termux/files/usr'
+const HOME = process.env.HOME || PREFIX.replace(/\/usr$/, '') + '/home'
+const DSH_HOME = process.env.DSH_HOME || HOME + '/.dsh'
+const SVD = PREFIX + '/var/service/dsh-web'
+const KEYS = SVD + '/environment'
+const BIN = PREFIX + '/bin'
+const SVDIR = PREFIX + '/var/service'
+const TMPDIR = process.env.TMPDIR || PREFIX + '/tmp'
+const SITES_JSON = DSH_HOME + '/sites.json'
+const ACCOUNTS_JSON = DSH_HOME + '/accounts.json'   // 旧版单账号存档，只用来迁移
+
+const CHILD_ENV = Object.assign({}, process.env, {
+  PREFIX,
+  DSH_HOME,
+  PATH: BIN + ':' + BIN + '/applets:' + (process.env.PATH || ''),
+})
+
+const RETRY_MS = 5000
+const RECHECK_MS = 20000
+
+const PANEL_HTML = (() => {
+  try {
+    return fs.readFileSync(PREFIX + '/share/dsh-ctl/panel.html', 'utf8')
+  } catch (e) {
+    return '<!doctype html><meta charset="utf-8"><body style="font:14px sans-serif;padding:24px">' +
+      '控制台页面文件缺失：' + PREFIX + '/share/dsh-ctl/panel.html</body>'
+  }
+})()
+
+/* ---------------------------------------------------------------- 基础工具 */
+
+function runFile(file, args, timeoutMs) {
+  return new Promise((resolve) => {
+    const child = execFile(
+      file,
+      args,
+      { env: CHILD_ENV, timeout: timeoutMs || 60000, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        resolve({
+          code: err && typeof err.code === 'number' ? err.code : err ? 1 : 0,
+          out: String(stdout || '') + String(stderr || ''),
+        })
+      },
+    )
+    child.on('error', (e) => resolve({ code: 127, out: '执行失败: ' + e.message }))
+  })
+}
+
+/** 把用户值里的换行剔掉，避免往 YAML / 命令行里灌结构。 */
+function clean(v, max) {
+  return String(v == null ? '' : v).replace(/[\r\n]+/g, ' ').trim().slice(0, max || 512)
+}
+
+function mask(v) {
+  if (!v) return ''
+  return v.length > 12 ? v.slice(0, 6) + '…' + v.slice(-4) : '****'
+}
+
+/**
+ * 凭据的「识别名」—— 列表里一眼认出一把 key 用。
+ * 取前 4 + 后 4（`dahl.om8Y` / `sk-7.ca14`），足够区分又不足以复用。
+ * 别指望它保密，它的作用只是让人不把两把 key 搞混。
+ */
+function hint(v) {
+  if (!v) return ''
+  const s = String(v)
+  if (s.length >= 12) return s.slice(0, 4) + '.' + s.slice(-4)
+  return s.length > 4 ? s : '****'
+}
+
+function lanIp() {
+  try {
+    const out = execSync('ifconfig 2>/dev/null', { encoding: 'utf8', timeout: 5000, env: CHILD_ENV })
+    let iface = ''
+    let fallback = ''
+    for (const line of out.split('\n')) {
+      const m = /^([A-Za-z0-9][A-Za-z0-9_.-]*):/.exec(line)
+      if (m) { iface = m[1]; continue }
+      const i = /^\s+inet\s+(?:addr:)?([0-9.]+)/.exec(line)
+      if (!i) continue
+      const ip = i[1]
+      if (ip === '127.0.0.1') continue
+      if (iface === 'wlan0') return ip
+      if (iface !== 'vgate0' && fallback === '') fallback = ip
+    }
+    return fallback
+  } catch { return '' }
+}
+
+/* ------------------------------------------------------------ 状态读取（只读） */
+
+function readText(p) {
+  try { return fs.readFileSync(p, 'utf8') } catch { return '' }
+}
+
+/** YAML 标量去引号：生成的清单带双引号，手写的多半不带。 */
+function unquote(v) {
+  const s = String(v == null ? '' : v).trim()
+  if (s.length > 1 && s[0] === '"' && s[s.length - 1] === '"') {
+    try { return JSON.parse(s) } catch { return s.slice(1, -1) }
+  }
+  if (s.length > 1 && s[0] === "'" && s[s.length - 1] === "'") return s.slice(1, -1)
+  return s
+}
+
+/** 取出 dsh-set-provider 管理的那一段配置。 */
+function providerBlock() {
+  const s = readText(DSH_HOME + '/profiles/web/cordis.patch.yml')
+  const m = /# >>> dsh-provider[^\n]*\n([\s\S]*?)# <<< dsh-provider/.exec(s)
+  return m ? m[1] : ''
+}
+
+/** 从生效配置里反解出「路由」：路由 id = "<接口 id>-<token id>"。 */
+function routesFromBlock(block) {
+  const out = []
+  if (!/^\s*- id: llm-pi-ai/m.test(block)) return out
+  let cur = null
+  let inModels = false
+  for (const l of block.split('\n')) {
+    let m
+    if ((m = /^ {6}([a-z][a-z0-9-]*):\s*$/.exec(l))) {
+      if (cur) out.push(cur)
+      cur = { id: m[1], api: '', baseURL: '', keyVar: '', displayName: m[1], models: [] }
+      inModels = false
+      continue
+    }
+    if (!cur) continue
+    if ((m = /^ {8}apiKeyEnv:\s*(.+)$/.exec(l))) { cur.keyVar = unquote(m[1]); continue }
+    if ((m = /^ {8}displayName:\s*(.+)$/.exec(l))) { cur.displayName = unquote(m[1]); continue }
+    if ((m = /^ {8}api:\s*(.+)$/.exec(l))) { cur.api = unquote(m[1]); continue }
+    if ((m = /^ {8}baseURL:\s*(.+)$/.exec(l))) { cur.baseURL = unquote(m[1]); continue }
+    if (/^ {8}models:\s*$/.test(l)) { inModels = true; continue }
+    if (inModels && (m = /^ {10}- id:\s*(.+)$/.exec(l))) { cur.models.push(unquote(m[1])); continue }
+    if (inModels && /^ {8}\S/.test(l)) inModels = false
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
+/** 路由 id → {site, token}。末尾的 -t<数字> 是 token，其余是接口。 */
+function splitRoute(rid) {
+  const m = /^(.+)-t(\d+)$/.exec(rid)
+  return m ? { site: m[1], token: 't' + m[2] } : { site: rid, token: 't1' }
+}
+
+/** 旧版 accounts.json → 新版接口结构：一个账号 = 一个接口挂一把 token。 */
+function sitesFromLegacyAccounts(j) {
+  return {
+    active: { site: String(j.active || '').trim(), token: 't1' },
+    sites: (j.accounts || []).map((a) => ({
+      id: String(a.id || '').trim(),
+      name: String(a.displayName || a.id || '').trim(),
+      api: String(a.api || '').trim(),
+      baseURL: String(a.baseURL || '').trim(),
+      tokens: [{
+        id: 't1',
+        note: '默认',
+        keyVar: String(a.keyVar || '').trim(),
+        defaultModel: String(a.defaultModel || '').trim(),
+        models: (Array.isArray(a.models) ? a.models : []).map((m) => unquote(m)).filter(Boolean),
+      }],
+    })).filter((s) => s.id),
+  }
+}
+
+/** 只有配置、没有任何存档时：把路由反解成接口（含老的 llm-deepseek 单账号形态）。 */
+function sitesFromRoutes(routes, block) {
+  if (!routes.length) {
+    if (!/^\s*- id: llm-deepseek/m.test(block)) return null
+    const url = /^\s*baseURL:\s*([^\s#]+)/m.exec(block)
+    const models = []
+    let inModels = false
+    for (const l of block.split('\n')) {
+      if (/^\s+models:\s*$/.test(l)) { inModels = true; continue }
+      const m = /^\s+- id:\s*([^\s#]+)/.exec(l)
+      if (inModels && m) models.push(unquote(m[1]))
+    }
+    return {
+      active: { site: 'deepseek', token: 't1' },
+      sites: [{
+        id: 'deepseek', name: 'Anthropic 兼容端点', api: 'anthropic-messages',
+        baseURL: url ? unquote(url[1]) : 'https://api.deepseek.com/anthropic',
+        tokens: [{ id: 't1', note: '默认', keyVar: 'DEEPSEEK_API_KEY', defaultModel: '', models }],
+      }],
+    }
+  }
+  const sites = []
+  const byId = new Map()
+  for (const r of routes) {
+    const { site, token } = splitRoute(r.id)
+    let s = byId.get(site)
+    if (!s) {
+      // displayName 是 "<接口名> · <备注>"，反解时拆不开 —— 接口名留空让面板
+      // 退回显示 id，备注则去掉接口名前缀，免得叠成 "A · A · 主号"。
+      s = { id: site, name: '', api: r.api, baseURL: r.baseURL, tokens: [] }
+      byId.set(site, s)
+      sites.push(s)
+    }
+    let note = r.displayName || token
+    const cut = note.lastIndexOf(' · ')
+    if (cut > 0) note = note.slice(cut + 3)
+    s.tokens.push({ id: token, note, keyVar: r.keyVar, defaultModel: '', models: r.models.slice() })
+  }
+  return { active: { site: '', token: '' }, sites }
+}
+
+/**
+ * 读出「接口清单 + 当前激活」。一个接口 = 一个 baseURL + 协议；一个 token =
+ * 这个接口上的一把钥匙（带备注），各自一组模型。dsh 里的路由 id 就是
+ * "<接口 id>-<token id>"，所以同一接口的多把 token 在 dsh 自己的模型选择器里
+ * 就能切换 —— 限流了换一把即可，不用动端点配置。
+ *
+ * 两个来源合并：
+ *   · sites.json（控制台写的存档：备注、顺序、还没配凭据的 token）
+ *   · cordis.patch.yml 的 dsh-provider 块（真正生效的那份，也是 active 的真源）
+ *
+ * 没有存档时依次退回：旧 accounts.json → 从生效配置反解。所以任何历史形态
+ * 都能直接读出来，不需要手工迁移。
+ */
+function readSites() {
+  const block = providerBlock()
+  const routes = routesFromBlock(block)
+  const creds = readCredentials()
+
+  let activeRoute = ''
+  let activeModel = ''
+  const am = /- id: agent-default-model[\s\S]*?\n\s*provider:\s*([^\s#]+)[\s\S]*?\n\s*model:\s*([^\s#]+)/.exec(block)
+  if (am) { activeRoute = unquote(am[1]); activeModel = unquote(am[2]) }
+
+  let migrated = false
+  let store = (() => {
+    try {
+      const j = JSON.parse(readText(SITES_JSON))
+      return j && Array.isArray(j.sites) && j.sites.length ? j : null
+    } catch { return null }
+  })()
+  if (!store) {
+    const legacy = (() => {
+      try {
+        const j = JSON.parse(readText(ACCOUNTS_JSON))
+        return j && Array.isArray(j.accounts) && j.accounts.length ? j : null
+      } catch { return null }
+    })()
+    store = legacy ? sitesFromLegacyAccounts(legacy) : sitesFromRoutes(routes, block)
+    if (store) migrated = true
+  }
+  if (!store) store = { active: { site: '', token: '' }, sites: [] }
+
+  const sites = store.sites.map((s) => ({
+    id: String(s.id || '').trim(),
+    name: String(s.name || s.id || '').trim(),
+    api: String(s.api || '').trim() || 'openai-completions',
+    baseURL: String(s.baseURL || '').trim(),
+    preset: String(s.preset || '').trim(),
+    tokens: (Array.isArray(s.tokens) ? s.tokens : []).map((t) => ({
+      id: String(t.id || '').trim(),
+      note: String(t.note || '').trim(),
+      label: String(t.label || '').trim(),
+      keyVar: String(t.keyVar || '').trim(),
+      defaultModel: String(t.defaultModel || '').trim(),
+      // 停用开关：存档里没写就是启用（老清单直接读也不会集体消失）
+      enabled: t.enabled === undefined ? true : !!t.enabled,
+      models: (Array.isArray(t.models) ? t.models : []).map((m) => unquote(m)).filter(Boolean),
+    })).filter((t) => t.id),
+  })).filter((s) => s.id)
+
+  // 每条路由的现状回填到 token 上（是否注册、凭据在不在），只报「有没有」不回传值
+  const routeIndex = new Map(routes.map((r) => [r.id, r]))
+  for (const s of sites) {
+    for (const t of s.tokens) {
+      t.routeId = s.id + '-' + t.id
+      const r = routeIndex.get(t.routeId)
+      t.registered = !!r
+      if (!t.models.length && r && r.models.length) t.models = r.models.slice()
+      if (!t.models.includes(t.defaultModel)) t.defaultModel = t.models[0] || ''
+      const c = creds.find((x) => x.name === t.keyVar)
+      t.hasKey = !!(c && c.value)
+      t.keyMasked = c ? c.masked : ''
+      // 列表里显示的那一列识别名（前4 + 后4）。用户自己填了 label 就用 label。
+      t.keyHint = c && c.value ? hint(c.value) : ''
+      t.name = t.label || t.keyHint || t.routeId
+    }
+  }
+
+  // 激活：生效配置说了算；配置里没有（刚改完还没保存）才用存档的
+  const st = store.active && typeof store.active === 'object' ? store.active : {}
+  let aSite = activeRoute ? splitRoute(activeRoute).site : String(st.site || '').trim()
+  let aToken = activeRoute ? splitRoute(activeRoute).token : String(st.token || '').trim()
+  let site = sites.find((x) => x.id === aSite)
+  let tok = site && site.tokens.find((x) => x.id === aToken)
+  if (!site) site = sites.find((x) => x.id === String(st.site || '').trim())
+  if (site && !tok) tok = site.tokens.find((x) => x.id === String(st.token || '').trim())
+  if (site && !tok) tok = site.tokens[0]
+  if (!site) { site = sites[0]; tok = site && site.tokens[0] }
+  if (tok && activeModel && tok.models.includes(activeModel)) tok.defaultModel = activeModel
+
+  // 「同一时间只有一把启用」：存档里的启用位可能与生效配置不同步（手改过、或换来版本），
+  // 以生效配置为准对齐一下，免得列表里同时亮起两把「启用」。只改内存，不动盘。
+  for (const s of sites) for (const t of s.tokens) t.enabled = !!(site && tok && s === site && t === tok)
+
+  return {
+    sites,
+    active: site && tok
+      ? { site: site.id, token: tok.id, routeId: tok.routeId, model: tok.defaultModel }
+      : { site: '', token: '', routeId: '', model: '' },
+    migrated,
+  }
+}
+
+function readCredentials() {
+  const out = []
+  for (const line of readText(KEYS).split('\n')) {
+    const m = /^export\s+([A-Za-z_][A-Za-z0-9_]*)=(['"]?)(.*)\2\s*$/.exec(line)
+    if (m) out.push({ name: m[1], value: m[3], masked: mask(m[3]) })
+  }
+  return out
+}
+
+function readServices() {
+  const names = ['dsh-web', 'dsh-lan', 'dsh-ctl']
+  const res = []
+  for (const n of names) {
+    let raw = ''
+    try {
+      raw = execSync(BIN + '/sv status ' + n + ' 2>&1', { encoding: 'utf8', timeout: 5000, env: CHILD_ENV })
+    } catch (e) { raw = String((e && e.stdout) || '') + String((e && e.stderr) || '') }
+    raw = raw.trim()
+    res.push({
+      name: n,
+      installed: fs.existsSync(SVDIR + '/' + n),
+      up: /^run:/.test(raw),
+      raw,
+    })
+  }
+  return res
+}
+
+function serviceLog(name, lines) {
+  const f = PREFIX + '/var/log/sv/' + name + '/current'
+  const s = readText(f)
+  if (!s) return '(没有日志：' + f + ')'
+  return s.split('\n').slice(-Math.max(1, Math.min(400, lines || 60))).join('\n')
+}
+
+async function readToken() {
+  const r = await runFile(BIN + '/dsh-web-url', [], 15000)
+  return /token=[A-Za-z0-9_-]+/.exec(r.out)
+    ? r.out.trim().split('\n').pop()
+    : ''
+}
+
+async function readVersion() {
+  const r = await runFile(BIN + '/dsh', ['--version'], 20000)
+  return (r.out || '').trim().split('\n')[0]
+}
+
+/* ------------------------------------------------------------------ 鉴权 */
+
+/** 把请求原样探到 dsh 的 /api 上：404=围栏+鉴权都过；401=未登录；403=围栏拒绝。 */
+function probeAuth(hostHeader, cookie, path) {
+  return new Promise((resolve) => {
+    const headers = { host: hostHeader }
+    if (cookie) headers.cookie = cookie
+    const req = http.request(
+      { host: UP_HOST, port: UP_PORT, path: path || '/api/__ctl_probe', method: 'GET', headers, timeout: 8000 },
+      (res) => { res.resume(); resolve(res.statusCode) },
+    )
+    req.on('error', () => resolve(0))
+    req.on('timeout', () => { req.destroy(); resolve(0) })
+    req.end()
+  })
+}
+
+/* ------------------------------------------------------------------ 控制台 API */
+
+async function buildState() {
+  const sc = readSites()
+  const creds = readCredentials()
+  const ip = lanIp()
+  const token = await readToken()
+  const ver = await readVersion()
+  const tokPart = /token=([A-Za-z0-9_-]+)/.exec(token)
+  return {
+    ok: true,
+    services: readServices(),
+    dshVersion: ver,
+    nodeVersion: process.version,
+    host: os.hostname(),
+    lanIp: ip,
+    gatewayUrl: ip ? 'http://' + ip + ':' + LISTEN_PORT + '/' : '',
+    dshUrl: ip && tokPart ? 'http://' + ip + ':' + LISTEN_PORT + '/app?token=' + tokPart[1] : token,
+    directUrl: token,
+    sites: sc.sites,
+    active: sc.active,
+    migrated: sc.migrated,
+    credentials: creds,
+    presets: PRESETS,
+    paths: { dshHome: DSH_HOME, keys: KEYS, serviceDir: SVD, sites: SITES_JSON, accounts: ACCOUNTS_JSON },
+  }
+}
+
+/**
+ * 新增接口时的固定预设。只有端点三要素（协议 / baseURL / 备注提示），
+ * 模型一律去端点上真拉 —— 各家改名太快，预置写死的东西第二天就过时。
+ *
+ * kind=fixed 是「固定内置」组：本地/自建聚合路由，一个入口打通一堆 provider，
+ * 这类端点在同一条隧道里反复用，所以做成开箱即用的一档。
+ */
+const PRESETS = [
+  {
+    kind: 'fixed', id: 'freellmapi', label: 'FreeLLMAPI 本地聚合',
+    url: 'http://127.0.0.1:3001/v1', api: 'openai-completions', models: ['auto'], note: '本地聚合',
+    hint: '自建聚合路由：各家免费 provider 的 key 填在它自己的面板里，对外只暴露一个 freellmapi- 开头的统一 key，模型写 auto 让它自己挑。默认监听 3001。',
+  },
+  {
+    kind: 'fixed', id: 'freellm', label: 'FreeLLM (npx)',
+    url: 'http://localhost:3000/v1', api: 'openai-completions', models: ['auto'], note: '本地聚合',
+    hint: 'npx freellm 起的聚合网关，默认 3000，统一 key 形如 freellm-…，模型 auto。',
+  },
+  {
+    kind: 'fixed', id: 'ollama', label: 'Ollama 本地',
+    url: 'http://127.0.0.1:11434/v1', api: 'openai-completions', note: 'Ollama',
+    hint: '本机 Ollama 的 OpenAI 兼容层，key 随便填（如 ollama），模型写 ollama list 里的名字。',
+  },
+  {
+    kind: 'fixed', id: 'lmstudio', label: 'LM Studio 本地',
+    url: 'http://127.0.0.1:1234/v1', api: 'openai-completions', note: 'LM Studio',
+    hint: 'LM Studio 里打开 Local Server，默认端口 1234，任意 key。',
+  },
+
+  { kind: 'cloud', id: 'dahl', label: 'Dahl 聚合网关', url: 'https://inference.dahl.global/v1', api: 'openai-completions' },
+  { kind: 'cloud', id: 'openai', label: 'OpenAI 官方', url: 'https://api.openai.com/v1', api: 'openai-completions' },
+  { kind: 'cloud', id: 'openrouter', label: 'OpenRouter', url: 'https://openrouter.ai/api/v1', api: 'openai-completions' },
+  { kind: 'cloud', id: 'nvidia', label: 'NVIDIA NIM', url: 'https://integrate.api.nvidia.com/v1', api: 'openai-completions' },
+  { kind: 'cloud', id: 'deepseek', label: 'DeepSeek 官方', url: 'https://api.deepseek.com/anthropic', api: 'anthropic-messages' },
+  { kind: 'cloud', id: 'zhipu', label: '智谱 GLM', url: 'https://open.bigmodel.cn/api/anthropic', api: 'anthropic-messages' },
+  { kind: 'cloud', id: 'zai', label: 'Z.AI（智谱海外）', url: 'https://api.z.ai/api/anthropic', api: 'anthropic-messages' },
+  { kind: 'cloud', id: 'kimi', label: '月之暗面 Kimi', url: 'https://api.moonshot.cn/anthropic', api: 'anthropic-messages' },
+  { kind: 'cloud', id: 'ark', label: '火山方舟', url: 'https://ark.cn-beijing.volces.com/api/coding', api: 'anthropic-messages' },
+  { kind: 'cloud', id: 'dashscope', label: '阿里云百炼', url: 'https://dashscope.aliyuncs.com/api/v2/apps/claude-code-proxy', api: 'anthropic-messages' },
+  { kind: 'cloud', id: 'siliconflow', label: '硅基流动', url: 'https://api.siliconflow.cn', api: 'anthropic-messages' },
+  { kind: 'cloud', id: 'minimax', label: 'MiniMax', url: 'https://api.minimaxi.com/anthropic', api: 'anthropic-messages' },
+  { kind: 'cloud', id: 'anthropic', label: 'Anthropic 官方', url: 'https://api.anthropic.com', api: 'anthropic-messages' },
+]
+
+async function apiApply(body) {
+  const mode = clean(body.mode || 'set')
+  const args = []
+  const steps = []
+  if (mode === 'clear') {
+    args.push('--clear')
+  } else {
+    const preset = clean(body.preset)
+    const baseUrl = clean(body.baseUrl)
+    const api = clean(body.api || 'anthropic-messages')
+    const providerId = clean(body.providerId || 'gateway', 64)
+    const keyVar = clean(body.keyVar, 64)
+    const models = (Array.isArray(body.models) ? body.models : String(body.models || '').split(','))
+      .map((m) => clean(m, 256)).filter(Boolean)
+    const key = String(body.key || '').replace(/[\r\n]/g, '')
+    if (api !== 'anthropic-messages' && api !== 'openai-completions') {
+      return { ok: false, out: '不支持的协议：' + api }
+    }
+    if (!models.length) return { ok: false, out: '至少要给一个模型 id' }
+    if (preset) args.push(preset)
+    else if (baseUrl) args.push('--base-url', baseUrl)
+    else return { ok: false, out: '缺少端点：给预置名或填 baseURL' }
+    args.push('--api', api)
+    if (api === 'openai-completions') args.push('--provider-id', providerId)
+    if (keyVar) args.push('--key-var', keyVar)
+    args.push('--model', models.join(','))
+    if (body.maxTokens) args.push('--max-tokens', String(Number(body.maxTokens) || 8192))
+    if (body.contextWindow) args.push('--context-window', String(Number(body.contextWindow) || 131072))
+    if (body.thinking) args.push('--thinking')
+    if (key) args.push('--key', key)
+    args.push('--no-restart')
+  }
+  const r = await runFile(BIN + '/dsh-set-provider', args, 180000)
+  steps.push({ cmd: 'dsh-set-provider ' + args.map((a) => (a === String(body.key || '') && body.key ? '****' : a)).join(' '), code: r.code, out: r.out })
+  if (r.code !== 0) return { ok: false, steps, out: r.out }
+  if (body.restart !== false) {
+    const rr = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
+    await sleep(4000)
+    const sr = await runFile(BIN + '/sv', ['status', 'dsh-web'], 10000)
+    steps.push({ cmd: 'sv restart dsh-web', code: rr.code, out: sr.out })
+  }
+  return { ok: true, steps, state: await buildState() }
+}
+
+async function apiKey(body) {
+  const name = clean(body.name, 64)
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return { ok: false, out: '变量名不合法' }
+  const args = []
+  if (body.clear) args.push('--clear')
+  else {
+    const value = String(body.value || '').replace(/[\r\n]/g, '')
+    if (!value) return { ok: false, out: '值不能为空' }
+    args.push('--no-verify', '--no-restart')
+  }
+  args.push('--env', name)
+  if (!body.clear) args.push(String(body.value).replace(/[\r\n]/g, ''))
+  const r = await runFile(BIN + '/dsh-set-key', args, 60000)
+  if (body.restart && r.code === 0) {
+    await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
+    await sleep(4000)
+  }
+  return { ok: r.code === 0, out: r.out, state: await buildState() }
+}
+
+async function apiVerify() {
+  // 用 bash -c + 位置参数传值，脚本串里不含任何用户输入。
+  const script = 'set -a; [ -f "$1" ] && . "$1"; set +a; exec dsh headless "$2"'
+  const r = await runFile(BIN + '/bash', ['-c', script, 'dsh-verify', KEYS, '只回答两个字：收到'], 200000)
+  const bad = /MISSING_CREDENTIAL|AUTH:|TRANSPORT|Error|error/.test(r.out)
+  return { ok: r.code === 0 && !bad, code: r.code, out: r.out }
+}
+
+/** 从 /models 的响应里取模型 id，兼容 data 数组 / models 数组 / models 字典三种形状。 */
+function parseModelIds(bodyText) {
+  let j
+  try { j = JSON.parse(bodyText) } catch { return [] }
+  const out = []
+  const seen = new Set()
+  const push = (v) => {
+    const id = String(v == null ? '' : v).trim()
+    if (id && !seen.has(id)) { seen.add(id); out.push(id) }
+  }
+  const arr = Array.isArray(j && j.data) ? j.data
+    : Array.isArray(j && j.models) ? j.models
+      : Array.isArray(j) ? j : null
+  if (arr) {
+    for (const m of arr) {
+      if (m == null) continue
+      if (typeof m === 'string') push(m)
+      else push(m.id != null ? m.id : m.name != null ? m.name : m.model)
+    }
+    return out
+  }
+  if (j && j.models && typeof j.models === 'object') for (const k of Object.keys(j.models)) push(k)
+  return out
+}
+
+/**
+ * 去端点上拉模型列表。
+ *
+ * 两种协议的列表 URL 与鉴权方式都不同，不能一套头打天下：
+ *   openai-completions → GET {base}/models          + Authorization: Bearer
+ *   anthropic-messages → GET {base}/v1/models?limit=1000 + x-api-key + anthropic-version
+ *     （列 URL 接受带或不带末尾 /v1 的根，这里统一归一化）
+ */
+async function apiModels(body) {
+  const api = clean(body.api) || 'openai-completions'
+  const base = clean(body.baseUrl).replace(/\/+$/, '')
+  if (!/^https?:\/\//.test(base)) return { ok: false, out: 'baseURL 必须以 http(s):// 开头' }
+  const key = String(body.key || '').replace(/[\r\n]/g, '')
+    || (readCredentials().find((c) => c.name === clean(body.keyVar, 64)) || {}).value || ''
+  if (!key) return { ok: false, out: '没有可用的 key：在这个账号里填一个，或先把它存进凭据' }
+
+  let url
+  let headers
+  // 固定带一个 UA：部分 CDN / WAF 对「连 User-Agent 都没有」的请求直接回 429。
+  const UA = { 'user-agent': 'dsh-ctl-gateway/1.0' }
+  if (api === 'anthropic-messages') {
+    url = (/\/v1$/.test(base) ? base : base + '/v1') + '/models?limit=1000'
+    headers = Object.assign({ 'x-api-key': key, 'anthropic-version': '2023-06-01', accept: 'application/json' }, UA)
+  } else {
+    url = base + '/models'
+    headers = Object.assign({ authorization: 'Bearer ' + key, accept: 'application/json' }, UA)
+  }
+
+  return new Promise((resolve) => {
+    let target
+    try { target = new URL(url) } catch { return resolve({ ok: false, code: 0, ms: 0, out: '端点无法解析：' + url }) }
+    // 第三方端点基本都是 https，http.request 会直接报 ERR_INVALID_PROTOCOL。
+    const mod = target.protocol === 'https:' ? https : http
+    const t0 = Date.now()
+    const req = mod.request(
+      { host: target.hostname, port: target.port || (target.protocol === 'https:' ? 443 : 80),
+        path: target.pathname + target.search, method: 'GET', timeout: 25000, headers },
+      (res) => {
+        let b = ''
+        res.on('data', (d) => { b += d })
+        res.on('end', () => {
+          const ids = parseModelIds(b)
+          const ms = Date.now() - t0
+          const ok = res.statusCode >= 200 && res.statusCode < 300
+          resolve(ok && ids.length
+            ? { ok: true, code: res.statusCode, ms, models: ids, out: 'GET ' + url + ' → ' + res.statusCode + '，' + ids.length + ' 个模型（' + ms + 'ms）' }
+            : { ok: false, code: res.statusCode, ms, out: 'GET ' + url + ' → ' + res.statusCode +
+                (ok ? '（没解析出模型）\n' + b.slice(0, 800) : '（' + b.slice(0, 300) + '）') })
+        })
+      },
+    )
+    req.on('error', (e) => resolve({ ok: false, code: 0, ms: Date.now() - t0, out: 'GET ' + url + ' 失败：' + e.message }))
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, code: 0, ms: Date.now() - t0, out: 'GET ' + url + ' 超时' }) })
+    req.end()
+  })
+}
+
+/**
+ * 「健康」探测 —— 就是拿这把 token 去打一次它的模型列表端点。
+ *
+ * 只有「端点可达 + 返回 2xx」这一个信号，**不代表这把 key 真的能推理**：
+ * 有些聚合站的 /models 根本不校验鉴权（dahl 就是），拿错 key 也回 200。
+ * 所以面板上的「健康」只用来排除「端点写错 / 断网 / DNS 挂了」这类问题，
+ * 真的要验 key，还得靠「端到端自检」真跑一次推理。
+ */
+async function apiHealth(body) {
+  const r = await apiModels(body)
+  return { ok: !!r.ok, code: r.code || 0, ms: r.ms || 0, out: r.out }
+}
+
+/**
+ * 保存整份「接口 + token」清单。
+ *
+ * 顺序是刻意的：先落凭据 → 再改配置 → 最后才重启。反过来会出现「配置引用了
+ * 还不存在的凭据」，服务起来直接 MISSING_CREDENTIAL；而且 dsh-set-provider
+ * 只把 **已有凭据** 的 token 写成路由，凭据晚一步那把 token 就白配了。
+ * 真正的写盘与校验交给设备上已回归过的 dsh-set-provider（它自带备份 + 组合
+ * 校验 + 失败回滚），网关不碰 YAML。
+ */
+async function apiSave(body) {
+  const rawSites = Array.isArray(body.sites) ? body.sites : []
+  if (!rawSites.length) return { ok: false, out: '至少要保留一个接口' }
+  const act = body.active && typeof body.active === 'object' ? body.active : {}
+  const activeSite = clean(act.site, 64)
+  const activeToken = clean(act.token, 64)
+  const keys = body.keys && typeof body.keys === 'object' ? body.keys : {}
+  const steps = []
+
+  for (const name of Object.keys(keys)) {
+    const value = String(keys[name] || '').replace(/[\r\n]/g, '')
+    if (!value) continue
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      return { ok: false, steps, out: '凭据变量名不合法：' + name }
+    }
+    const r = await runFile(BIN + '/dsh-set-key', ['--no-verify', '--no-restart', '--env', name, value], 60000)
+    steps.push({ cmd: 'dsh-set-key --env ' + name + ' ****', code: r.code, out: r.out })
+    if (r.code !== 0) return { ok: false, steps, out: r.out }
+  }
+
+  const sites = rawSites.map((s) => ({
+    id: clean(s.id, 64),
+    name: clean(s.name, 128),
+    api: clean(s.api, 40),
+    baseURL: clean(s.baseURL, 512),
+    preset: clean(s.preset, 64),
+    tokens: (Array.isArray(s.tokens) ? s.tokens : []).map((t) => ({
+      id: clean(t.id, 64),
+      note: clean(t.note, 128),
+      label: clean(t.label, 64),
+      keyVar: clean(t.keyVar, 64),
+      defaultModel: clean(t.defaultModel, 256),
+      enabled: t.enabled === false ? false : true,
+      models: (Array.isArray(t.models) ? t.models : []).map((m) => clean(m, 256)).filter(Boolean),
+    })),
+  }))
+
+  // 同一时间只有一把启用：落盘之前先把启用位归一 —— 只有 active 指的那把是启用的。
+  // dsh-set-provider 要求 active 指的那把必须 enabled，而多把 enabled 会被它写成多条路由。
+  const actKeep = normalizeActive(sites, activeSite, activeToken)
+
+  const file = TMPDIR + '/dsh-sites-' + process.pid + '-' + Date.now() + '.json'
+  try {
+    fs.writeFileSync(file, JSON.stringify({ active: actKeep, sites }, null, 2), 'utf8')
+    const r = await runFile(BIN + '/dsh-set-provider', ['--sites-file', file, '--no-restart'], 180000)
+    steps.push({ cmd: 'dsh-set-provider --sites-file <清单> --no-restart', code: r.code, out: r.out })
+    if (r.code !== 0) return { ok: false, steps, out: r.out }
+  } finally {
+    try { fs.unlinkSync(file) } catch {}
+  }
+
+  // 存档：只存 dsh 配置放不下的部分（备注、顺序、还没配凭据的 token）
+  try {
+    fs.writeFileSync(SITES_JSON, JSON.stringify({
+      active: actKeep,
+      sites,
+    }, null, 2) + '\n', 'utf8')
+  } catch (e) {
+    steps.push({ cmd: '写 ' + SITES_JSON, code: 1, out: String(e.message) })
+  }
+
+  if (body.restart !== false) {
+    const rr = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
+    await sleep(4000)
+    const sr = await runFile(BIN + '/sv', ['status', 'dsh-web'], 10000)
+    steps.push({ cmd: 'sv restart dsh-web', code: rr.code, out: sr.out })
+  }
+  if (body.verify) {
+    const v = await apiVerify()
+    steps.push({ cmd: 'dsh headless "只回答两个字：收到"', code: v.code, out: v.out })
+    if (!v.ok) return { ok: false, steps, out: v.out, state: await buildState() }
+  }
+  return { ok: true, steps, state: await buildState() }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * 「同一时间只有一把启用」的唯一判据 —— 写盘前归一化。
+ *
+ * 启用 = 当前生效 = 写进 dsh 的那条路由，三件事是一件事。面板已经用单开关守住了，
+ * 这里再兜一道：清单被手改过、或换了版本读到老数据时，也保证落盘的清单里只有一把
+ * `enabled: true`。不这么做的话，dsh-set-provider 会把**每一把** enabled 的 token
+ * 都写成路由，多把启用等于多开线路，跟面板上那句「只有一把生效」就对不上了。
+ *
+ * 选定顺序：(`wantSite`,`wantToken`) 精确命中 → 同接口任一 token → 清单第一把。
+ * @returns {{site: string, token: string}} 归一化后的 active
+ */
+function normalizeActive(sites, wantSite, wantToken) {
+  const all = []
+  for (const s of sites) for (const t of (s.tokens || [])) all.push({ s, t })
+  if (!all.length) return { site: '', token: '' }
+  const pick =
+    all.find((x) => x.s.id === wantSite && x.t.id === wantToken) ||
+    all.find((x) => x.s.id === wantSite) ||
+    all[0]
+  for (const x of all) x.t.enabled = x === pick
+  return { site: pick.s.id, token: pick.t.id }
+}
+
+/**
+ * 只落「清单」（sites.json），**不碰** dsh 的配置。
+ *
+ * 加接口 / 加 Token 这类结构改动走这里。那些改动生来就是不完整的（还没凭据、
+ * 甚至还没模型），交给 dsh-set-provider 会被它按规矩拒掉 —— 而它拒的同时也
+ * 不会写清单，结果就是「点了＋，刷新一下那行就没了」。清单是面板的记忆，
+ * 配置是 dsh 的事实，本来就是两件事，分开写。
+ *
+ * 这里只做形状校验（接口 id / 变量名 / 至少一个接口），不校验完整性。
+ */
+async function apiManifest(body) {
+  const rawSites = Array.isArray(body.sites) ? body.sites : []
+  if (!rawSites.length) return { ok: false, out: '至少要保留一个接口' }
+  const act = body.active && typeof body.active === 'object' ? body.active : {}
+
+  const sites = []
+  for (const s of rawSites) {
+    const id = clean(s.id, 64)
+    if (!/^[a-z][a-z0-9-]*$/.test(id)) {
+      return { ok: false, out: '接口 id 不合法（要小写字母开头，只含小写字母、数字、连字符）：' + (id || '(空)') }
+    }
+    const tokens = []
+    for (const t of (Array.isArray(s.tokens) ? s.tokens : [])) {
+      const tid = clean(t.id, 64)
+      const keyVar = clean(t.keyVar, 64)
+      if (keyVar && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyVar)) {
+        return { ok: false, out: '凭据变量名不合法：' + keyVar }
+      }
+      tokens.push({
+        id: tid,
+        note: clean(t.note, 128),
+        label: clean(t.label, 64),
+        keyVar,
+        defaultModel: clean(t.defaultModel, 256),
+        enabled: t.enabled === false ? false : true,
+        models: (Array.isArray(t.models) ? t.models : []).map((m) => clean(m, 256)).filter(Boolean),
+      })
+    }
+    sites.push({
+      id,
+      name: clean(s.name, 128) || id,
+      api: clean(s.api, 40) || 'openai-completions',
+      baseURL: clean(s.baseURL, 512),
+      preset: clean(s.preset, 64),
+      tokens,
+    })
+  }
+
+  // 归一化：只有 active 指的那把会被标成启用，其余一律待命
+  // （不变量：同一时间只有一把启用；也是 dsh-set-provider 要求的形态）。
+  const keep = normalizeActive(sites, clean(act.site, 64), clean(act.token, 64))
+
+  try {
+    fs.writeFileSync(SITES_JSON, JSON.stringify({ active: keep, sites }, null, 2) + '\n', 'utf8')
+  } catch (e) {
+    return { ok: false, out: '写 ' + SITES_JSON + ' 失败：' + String(e.message) }
+  }
+  return {
+    ok: true,
+    out: '已写清单 ' + SITES_JSON + '（' + sites.length + ' 个接口 / ' +
+         sites.reduce((n, s) => n + s.tokens.length, 0) + ' 把密钥）。\n' +
+         'dsh 的配置这次没动 —— 要让它生效得再点「保存并重启」。',
+    state: await buildState(),
+  }
+}
+
+/* ------------------------------------------------------------------ HTTP */
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let b = ''
+    req.on('data', (d) => { b += d; if (b.length > 2e6) req.destroy() })
+    req.on('end', () => { try { resolve(b ? JSON.parse(b) : {}) } catch { resolve({}) } })
+  })
+}
+
+function json(res, code, obj) {
+  const s = JSON.stringify(obj)
+  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(s), 'cache-control': 'no-store' })
+  res.end(s)
+}
+
+function html(res, code, body) {
+  res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(body)
+}
+
+const CTL_API = {
+  state: async () => buildState(),
+  save: apiSave,
+  manifest: apiManifest,
+  apply: apiApply,
+  key: apiKey,
+  verify: apiVerify,
+  models: apiModels,
+  health: apiHealth,
+  restart: async () => {
+    const r = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
+    await sleep(4000)
+    const s = await runFile(BIN + '/sv', ['status', 'dsh-web'], 10000)
+    return { ok: r.code === 0, out: s.out, state: await buildState() }
+  },
+  log: async (b) => ({ ok: true, out: serviceLog(clean(b.name) || 'dsh-web', Number(b.lines) || 60) }),
+}
+
+async function handleCtl(req, res, url) {
+  const hostHeader = req.headers.host || ''
+  const cookie = req.headers.cookie || ''
+  const code = await probeAuth(hostHeader, cookie)
+  const authed = code === 404
+
+  if (url.pathname === '/ctl' || url.pathname === '/ctl/') {
+    return html(res, authed ? 200 : 401, authed ? PANEL_HTML : loginPage(hostHeader))
+  }
+  if (!url.pathname.startsWith('/ctl/api/')) return json(res, 404, { ok: false, out: 'not found' })
+  if (!authed) return json(res, 401, { ok: false, out: code === 0 ? '连不上 dsh web（服务没起？）' : '未登录或围栏拒绝（dsh /api 返回 ' + code + '）' })
+
+  const name = url.pathname.slice('/ctl/api/'.length)
+  const fn = CTL_API[name]
+  if (!fn) return json(res, 404, { ok: false, out: 'unknown api ' + name })
+  try {
+    const body = req.method === 'POST' ? await readBody(req) : {}
+    return json(res, 200, await fn(body))
+  } catch (e) {
+    return json(res, 500, { ok: false, out: String((e && e.stack) || e) })
+  }
+}
+
+/* ------------------------------------------------------------------ 代理 */
+
+function proxy(req, res, rewrite) {
+  const path = rewrite && rewrite.path ? rewrite.path : req.url
+  const p = http.request(
+    { host: UP_HOST, port: UP_PORT, path, method: req.method, headers: req.headers },
+    (pres) => {
+      const headers = Object.assign({}, pres.headers)
+      if (rewrite && rewrite.location && headers.location) headers.location = rewrite.location
+      res.writeHead(pres.statusCode || 502, headers)
+      pres.pipe(res)
+    },
+  )
+  p.on('error', (e) => {
+    if (res.headersSent) return res.destroy()
+    html(res, 502, downPage(e.message))
+  })
+  req.pipe(p)
+}
+
+/**
+ * 把 dsh 主界面挂到 /app。
+ *
+ * dsh 自己只会把前端吐在 `/`（`/dsh` 之类一律 404，没有 SPA fallback），
+ * 而它的 index.html 用的是相对引用 `./assets/…`。所以这里由网关自己去上游
+ * 取回 `/` 的 index.html，再以 200 吐给浏览器 —— 浏览器按 `/app` 的目录基
+ * （也就是 `/`）解析相对引用，正好落到 `/assets/…`、`/langs/…`、`/fonts/…`，
+ * 全部命中下面的兜底转发。等于给 dsh 前端做了个免改动的子路径挂载。
+ *
+ * 反过来不能挂到 `/app/`：那样目录基变成 `/app/`，相对引用会变成
+ * `/app/assets/…`，上游 404。所以 /app/ 一律 302 回 /app。
+ */
+function serveSpa(req, res) {
+  const headers = { host: req.headers.host || '', 'accept-encoding': 'identity' }
+  if (req.headers.cookie) headers.cookie = req.headers.cookie
+  const p = http.request(
+    { host: UP_HOST, port: UP_PORT, path: '/', method: 'GET', headers, timeout: 15000 },
+    (pres) => {
+      let b = ''
+      pres.setEncoding('utf8')
+      pres.on('data', (d) => { b += d })
+      pres.on('end', () => {
+        if (res.headersSent) return
+        if (pres.statusCode === 200) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+          return res.end(b)
+        }
+        buildState().then((st) => { if (!res.headersSent) html(res, 200, portalPage(st)) })
+      })
+    },
+  )
+  p.on('error', (e) => { if (!res.headersSent) html(res, 502, downPage(e.message)) })
+  p.on('timeout', () => { p.destroy(); if (!res.headersSent) html(res, 504, downPage('取 dsh 首页超时')) })
+  p.end()
+}
+
+/* ------------------------------------------------------------------ 首页 */
+
+function shell(title, inner) {
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title>
+<style>
+:root{--bg:#0f1115;--panel:#161a20;--panel2:#1c222b;--bd:#2a313c;--fg:#e6e9ef;--dim:#8b95a5;--acc:#4c8dff;--ok:#37c871;--warn:#f5a623;--err:#ef4d4d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif}
+a{color:var(--acc);text-decoration:none}
+.wrap{max-width:1040px;margin:0 auto;padding:22px 16px 60px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--dim);font-size:12.5px;margin-bottom:18px}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+.card h2{font-size:13px;margin:0 0 12px;color:var(--dim);font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+input,select,textarea{width:100%;background:var(--panel2);border:1px solid var(--bd);color:var(--fg);border-radius:8px;padding:8px 10px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
+textarea{min-height:74px;resize:vertical}
+button{background:var(--panel2);border:1px solid var(--bd);color:var(--fg);border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer}
+button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+button.danger{border-color:#5a2a2a;color:#ff9c9c}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--bd);border-radius:999px;padding:4px 11px;font-size:12px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}
+.dot.ok{background:var(--ok)}.dot.no{background:var(--err)}
+kbd{background:var(--panel2);border:1px solid var(--bd);border-radius:6px;padding:2px 7px;font:12px ui-monospace,monospace}
+pre{background:#0b0d11;border:1px solid var(--bd);border-radius:8px;padding:12px;overflow:auto;max-height:340px;font:12px/1.55 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;margin:0}
+.muted{color:var(--dim);font-size:12.5px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{text-align:left;padding:5px 8px;border-bottom:1px solid #222831}
+th{color:var(--dim);font-weight:500;font-size:12px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:640px){.two{grid-template-columns:1fr}}
+</style></head><body><div class="wrap">${inner}</div></body></html>`
+}
+
+function loginPage(host) {
+  return shell('dsh 控制台 · 需登录', `
+<h1>需要先登录 dsh</h1>
+<div class="sub">控制台复用 dsh 自己的登录 cookie，不额外设第二套口令。</div>
+<div class="card">
+  <p>这个浏览器还没有 <kbd>${host}</kbd> 这个地址上的有效登录。</p>
+  <p class="muted">dsh 的 cookie 是<b>按 authority 绑定</b>的，所以 3080 登过不等于 8030 登过，需要在 8030 上单独走一次。</p>
+  <p class="row">
+    <a href="/"><button class="primary">去网关首页拿令牌 →</button></a>
+    <a href="/app"><button>直接开 dsh 主界面</button></a>
+  </p>
+</div>`)
+}
+
+function downPage(msg) {
+  return shell('dsh 网关 · 上游不可达', `
+<h1>连不上 dsh web</h1>
+<div class="sub">网关在跑，但 127.0.0.1:${UP_PORT} 没应答。</div>
+<div class="card"><pre>${msg}</pre>
+<p class="muted">到手机上执行： <kbd>sv status dsh-web</kbd> → <kbd>sv restart dsh-web</kbd></p></div>`)
+}
+
+function portalPage(st) {
+  const ip = st.lanIp || '<手机IP>'
+  const tok = (/(?:[?&]token=)([A-Za-z0-9_-]+)/.exec(st.directUrl) || [, ''])[1]
+  return shell('dsh 网关 · 需登录', `
+<h1>dsh 网关 · ${ip}:${LISTEN_PORT}</h1>
+<div class="sub">这个端口是网关自己的管理入口；dsh 主界面挂在 <kbd>/app</kbd>。</div>
+
+<div class="card">
+  <h2>先登录一次</h2>
+  <p class="muted">这个浏览器在 <kbd>${ip}:${LISTEN_PORT}</kbd> 上还没有 dsh 的登录 cookie。
+  dsh 的 cookie <b>按地址绑定</b>，所以 3080 上登过不算，8030 要单独走一次。</p>
+  <p class="row"><a href="/app?token=${tok}"><button class="primary">用下面的令牌登录 →</button></a></p>
+  <pre>http://${ip}:${LISTEN_PORT}/app?token=${tok || '<取不到令牌>'}</pre>
+  <p class="muted" style="margin-top:10px">登录后回 <kbd>http://${ip}:${LISTEN_PORT}/</kbd> 就是控制台。</p>
+</div>
+
+<div class="card">
+  <h2>服务</h2>
+  <div class="row">${st.services.map((s) => `<span class="chip"><span class="dot ${s.up ? 'ok' : 'no'}"></span>${s.name} ${s.up ? '运行中' : s.installed ? '未运行' : '未安装'}</span>`).join('')}</div>
+  <p class="muted" style="margin-top:10px">dsh ${st.dshVersion || '?'} · node ${st.nodeVersion}</p>
+</div>
+
+<div class="card">
+  <h2>路由速查</h2>
+  <table>
+    <tr><th>路径</th><th>去哪</th></tr>
+    <tr><td><kbd>/</kbd></td><td>网关控制台（设置 / 状态 / 模型）</td></tr>
+    <tr><td><kbd>/app</kbd></td><td>dsh 主界面</td></tr>
+    <tr><td><kbd>/ctl/api/…</kbd></td><td>控制台接口</td></tr>
+  </table>
+  <p class="muted" style="margin-top:10px">公共 Wi-Fi 下建议 <kbd>sv down dsh-lan</kbd> 关掉多余的局域网入口。</p>
+</div>`)
+}
+
+/* ------------------------------------------------------------------ 启动 */
+
+let server = null
+let boundHost = null
+
+function onRequest(req, res) {
+  let url
+  try { url = new URL(req.url, 'http://' + (req.headers.host || 'localhost')) }
+  catch { url = { pathname: req.url.split('?')[0], searchParams: new URLSearchParams() } }
+
+  const p = url.pathname
+
+  // 控制台（含它的 API）
+  if (p === '/ctl' || p.startsWith('/ctl/')) return handleCtl(req, res, url)
+
+  // dsh 主界面
+  if (p === '/app') {
+    const token = url.searchParams.get('token')
+    if (token) {
+      // 令牌必须由 dsh 自己下发（它会按 authority 种 cookie），
+      // 所以把路径改写成 '/' 转发，再把 303 的落点改回 /app。
+      return proxy(req, res, { path: '/' + url.search, location: '/app' })
+    }
+    return serveSpa(req, res)
+  }
+  if (p.startsWith('/app/') || p === '/app.html') {
+    res.writeHead(302, { location: '/app', 'cache-control': 'no-store' })
+    return res.end()
+  }
+
+  // 网关自己的首页 = 管理控制台
+  if (p === '/' || p === '/index.html') {
+    // 老链接 / 书签里的 /?token=… 仍然要能用 —— 挪到 /app 走登录
+    if (url.searchParams.get('token')) {
+      res.writeHead(302, { location: '/app' + url.search, 'cache-control': 'no-store' })
+      return res.end()
+    }
+    return probeAuth(req.headers.host || '', req.headers.cookie || '').then((code) => {
+      if (res.headersSent) return
+      if (code === 404) return html(res, 200, PANEL_HTML)
+      if (code === 0) return html(res, 502, downPage('连接 127.0.0.1:' + UP_PORT + ' 失败'))
+      return buildState().then((st) => { if (!res.headersSent) html(res, 200, portalPage(st)) })
+    })
+  }
+
+  // 其余（/assets /langs /fonts /api favicon manifest…）一律透明转发
+  return proxy(req, res)
+}
+
+function onUpgrade(req, socket, head) {
+  const up = net.connect(UP_PORT, UP_HOST, () => {
+    const lines = [req.method + ' ' + req.url + ' HTTP/1.1']
+    for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(req.rawHeaders[i] + ': ' + req.rawHeaders[i + 1])
+    up.write(lines.join('\r\n') + '\r\n\r\n')
+    if (head && head.length) up.write(head)
+    socket.pipe(up)
+    up.pipe(socket)
+  })
+  const tear = () => { socket.destroy(); up.destroy() }
+  socket.on('error', tear)
+  up.on('error', tear)
+  socket.on('close', tear)
+  up.on('close', tear)
+}
+
+function bind() {
+  const host = LISTEN_HOST === 'auto' ? lanIp() : LISTEN_HOST
+  if (!host) {
+    console.error('dsh-ctl-gateway: 还没有局域网 IP，' + RETRY_MS / 1000 + ' 秒后重试')
+    setTimeout(bind, RETRY_MS)
+    return
+  }
+  if (server && boundHost === host && server.listening) return
+  if (server) {
+    const old = server
+    server = null
+    boundHost = null
+    try { old.close() } catch {}
+  }
+  const s = http.createServer(onRequest)
+  s.on('upgrade', onUpgrade)
+  s.on('error', (err) => {
+    console.error('dsh-ctl-gateway: 监听 ' + host + ':' + LISTEN_PORT + ' 失败：' + err.message + '；' + RETRY_MS / 1000 + ' 秒后重试')
+    setTimeout(bind, RETRY_MS)
+  })
+  s.listen(LISTEN_PORT, host, () => {
+    boundHost = host
+    console.log('dsh-ctl-gateway: http://' + host + ':' + LISTEN_PORT + '/  (控制台 /ctl) -> ' + UP_HOST + ':' + UP_PORT)
+    // 启动自检：围栏必须放行本 authority（期望 401 = 围栏过了、只是没登录）。
+    probeAuth(host + ':' + LISTEN_PORT, '').then((code) => {
+      if (code === 401) {
+        console.log('  ✓ /api 围栏放行 ' + host + ':' + LISTEN_PORT + '（401 = 等登录）')
+      } else if (code === 403) {
+        console.log('  ✗ /api 围栏拒绝了 ' + host + ':' + LISTEN_PORT + ' —— dsh-web 的 run 脚本里需要 --trusted-host ' + host)
+      } else if (code === 404) {
+        console.log('  ! 探针路径被当成已存在路由处理了（404 当成"已登录"会误判）')
+      } else {
+        console.log('  ! 探针没结果（code=' + code + '）：dsh-web 可能还没起来')
+      }
+    })
+  })
+  server = s
+}
+
+bind()
+
+setInterval(() => {
+  if (LISTEN_HOST !== 'auto') return
+  const want = lanIp()
+  if (want && want !== boundHost) {
+    console.log('dsh-ctl-gateway: 局域网 IP 变了 ' + boundHost + ' -> ' + want + '，重建监听')
+    console.log('  ！dsh-web 的 --trusted-host 仍是旧 IP，请执行: sv restart dsh-web')
+    bind()
+  }
+}, RECHECK_MS)

@@ -1,0 +1,18 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# dsh-lan —— 把 dsh web（只监听 127.0.0.1:3080）转发到局域网。
+#
+# 关掉它不影响 dsh-web 本体，SSH 隧道那条路照旧可用：
+#   sv down dsh-lan     # 临时关掉局域网入口
+#   sv up dsh-lan       # 再打开
+#
+# 安全提示：dsh 官方拒绝直接绑 0.0.0.0，理由是这个 Web UI 等于远程代码执行入口。
+# 本转发层把入口收窄到「本机局域网 IP + 3080」，且 dsh 自带一次性令牌 +
+# authority 绑定的 cookie 认证（无令牌 401）。但请勿在不可信网络里开着它。
+
+export PREFIX="/data/data/com.termux/files/usr"
+export HOME="/data/data/com.termux/files/home"
+export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/bin/applets"
+export TMPDIR="/data/data/com.termux/files/usr/tmp"
+export LANG="en_US.UTF-8"
+
+exec "$PREFIX/bin/dsh-lan-gateway" auto 3080 127.0.0.1 3080

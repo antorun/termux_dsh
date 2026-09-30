@@ -1,0 +1,42 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# dsh-lan-ip -- 打印本机的局域网 IPv4；取不到则退出码 1、不输出。
+#
+# 为什么要这么绕：Termux 上拿本机 IP 的常规手段都不灵。
+#   · 没有 iproute2，'ip' 命令不存在；
+#   · 'getprop dhcp.wlan0.ipaddress' 在 Android 16 上返回空；
+#   · 'hostname -I' 在 Termux 的 hostname 上不支持；
+#   · 'ifconfig wlan0'（带接口名）输出为空，只有无参 ifconfig 才列得出。
+# 还要跳过两个坑：lo(127.0.0.1) 和 vgate0(172.30.x.x，POINTOPOINT 虚拟口)。
+
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+PATH="$PREFIX/bin:$PREFIX/bin/applets:$PATH"
+export PATH
+
+ip=""
+
+# SSH_CONNECTION = "客户端IP 客户端端口 本机IP 本机端口"，第 3 个字段是本机地址。
+if [ -n "${SSH_CONNECTION:-}" ]; then
+  ip=$(printf '%s\n' "$SSH_CONNECTION" | awk '{print $3}')
+  case "$ip" in
+    127.* | "") ip="" ;;
+  esac
+fi
+
+if [ -z "$ip" ]; then
+  ip=$(ifconfig 2>/dev/null | awk '
+    /^[A-Za-z0-9][A-Za-z0-9_.-]*:/ { n = $1; sub(/:.*/, "", n) }
+    $1 == "inet" {
+      ip = $2; sub(/^addr:/, "", ip)
+      if (n == "wlan0") { print ip; hit = 1; exit }
+      if (ip != "127.0.0.1" && n != "vgate0" && fb == "") fb = ip
+    }
+    END { if (!hit && fb != "") print fb }
+  ' | head -1)
+fi
+
+if [ -z "$ip" ]; then
+  echo "dsh-lan-ip: 取不到局域网 IP（无参 ifconfig 里没有非 loopback 的 inet）" >&2
+  exit 1
+fi
+
+printf '%s\n' "$ip"

@@ -1,0 +1,167 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# dsh-set-key —— 给 dsh-web 守护服务注入/查看/清除模型 API Key
+#
+#   dsh-set-key sk-xxxxxxxx               写入 DEEPSEEK_API_KEY，重启服务并真调一次 API 验证
+#   dsh-set-key --env DAHL_API_KEY <key>  写到指定变量名（第三方网关用这个）
+#   dsh-set-key --no-verify <key>         只写不验证（第三方 key 用这个）
+#   dsh-set-key --endpoint URL <key>      用指定端点验证（默认 DeepSeek 的 /models）
+#   dsh-set-key --show                    显示所有已设变量（打码）
+#   dsh-set-key --clear [--env NAME]      清除；不给 --env 就删掉整个文件
+#   dsh-set-key --no-restart <key>        只写文件，不重启
+#
+# 为什么走环境变量而不是 .credentials.yaml：
+#   那份文件由 provider 自己管理（原子写 + 跨进程锁 + 启动期强校验），
+#   手工改坏了会让 dsh web 起不来；环境变量是官方支持的等价通路，坏了删掉即可。
+#
+# 这个文件是**多变量共存**的：官方后端读 DEEPSEEK_API_KEY，第三方网关读
+# dsh-set-provider 写进 patch 的那个 apiKeyEnv 名字。所以写入是合并不是覆盖。
+set -u
+export PATH="$PREFIX/bin:$PREFIX/bin/applets:$PATH"
+
+SVD="$PREFIX/var/service/dsh-web"
+KEYS="$SVD/environment"
+ENVNAME="DEEPSEEK_API_KEY"
+DEF_ENDPOINT="https://api.deepseek.com/models"
+
+die() { echo "$*" >&2; exit 1; }
+
+mask() { awk '{ if (length($0) > 10) print substr($0,1,6) "…" substr($0,length($0)-3); else print "****" }'; }
+
+verify() { # $1 = key, $2 = endpoint
+  local code
+  code=$(curl -sS -m 20 -o /dev/null -w '%{http_code}' \
+           -H "Authorization: Bearer $1" -H "x-api-key: $1" "$2" 2>/dev/null) \
+    || { echo "  ! 网络请求失败（$2）"; return 1; }
+  case "$code" in
+    200) echo "  ✓ 凭据有效（GET $2 → 200）"; return 0 ;;
+    401|403) echo "  ✗ 凭据无效（GET $2 → $code）"; return 1 ;;
+    *) echo "  ? 意外响应码 $code（$2）"; return 1 ;;
+  esac
+}
+
+restart_and_report() {
+  sv restart dsh-web >/dev/null 2>&1 || die "sv restart 失败"
+  sleep 4
+  sv status dsh-web | sed 's/^/  /'
+  local vars pid cmd v
+  vars=$(sed -n 's/^export \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$KEYS" 2>/dev/null)
+  # 只认 cmdline 里是 「<node> --expose-internals .../bin/dsh web ...」 的那个进程。
+  # sv status 会同时报主进程与 svlogd 两个 pid，按 cmdline 判才不会报错对象。
+  for p in /proc/[0-9]*/cmdline; do
+    pid=$(printf '%s' "$p" | cut -d/ -f3)
+    cmd=$(tr '\0' ' ' < "$p" 2>/dev/null)
+    case "$cmd" in
+      *"/bin/dsh web"*)
+        echo "    cmd: $cmd"
+        if [ -z "$vars" ]; then
+          echo "  ! 当前没有配置任何 API key 变量"
+        else
+          for v in $vars; do
+            if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q "^${v}="; then
+              echo "  ✓ 服务进程 $pid 已带上 $v"
+            else
+              echo "  ! 服务进程 $pid 未见 $v"
+            fi
+          done
+        fi;;
+    esac
+  done
+  echo "  令牌: $(dsh-web-url 2>/dev/null | grep -aoE 'http://[^[:space:]]+token=[A-Za-z0-9_-]+' | tail -1)"
+}
+
+show_all() {
+  if [ ! -f "$KEYS" ]; then echo "  未设置（$KEYS 不存在）"; return 0; fi
+  local n v
+  while IFS= read -r line; do
+    case "$line" in
+      "export "*"="*)
+        n="${line#export }"; n="${n%%=*}"
+        v="${line#*=}"; v=$(printf '%s' "$v" | tr -d "'\"")
+        printf '  %-24s %s\n' "$n" "$(printf '%s' "$v" | mask)";;
+    esac
+  done < "$KEYS"
+}
+
+# 合并写入：同名变量覆盖，其它变量保留
+write_env() { # $1 = 变量名, $2 = 值
+  umask 077
+  local tmp="$KEYS.tmp.$$"
+  mkdir -p "$SVD"
+  if [ -f "$KEYS" ]; then
+    grep -v "^export ${1}=" "$KEYS" > "$tmp" 2>/dev/null || : > "$tmp"
+  else
+    : > "$tmp"
+  fi
+  printf "export %s='%s'\n" "$1" "$2" >> "$tmp"
+  chmod 600 "$tmp" && mv -f "$tmp" "$KEYS" || die "写入 $KEYS 失败"
+}
+
+clear_env() { # $1 = 变量名；空则删整个文件
+  if [ -z "${1:-}" ]; then
+    rm -f "$KEYS" && echo "已清除 $KEYS（全部变量）" || die "删除失败"
+    return 0
+  fi
+  [ -f "$KEYS" ] || { echo "  $KEYS 不存在，无需清除"; return 0; }
+  umask 077
+  local tmp="$KEYS.tmp.$$"
+  grep -v "^export ${1}=" "$KEYS" > "$tmp" 2>/dev/null || : > "$tmp"
+  if [ -s "$tmp" ]; then
+    chmod 600 "$tmp" && mv -f "$tmp" "$KEYS"
+    echo "已清除变量 $1（其余保留）"
+  else
+    rm -f "$tmp" "$KEYS"; echo "已清除变量 $1，文件已空故一并删除"
+  fi
+}
+
+VERIFY=yes
+ENDPOINT="$DEF_ENDPOINT"
+RESTART=yes
+KEY=""
+MODE=set
+ENV_GIVEN=no
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    --show) show_all; exit 0;;
+    --clear) MODE=clear; shift;;
+    --env) ENVNAME="${2:-}"; [ -n "$ENVNAME" ] || die "--env 需要参数"; ENV_GIVEN=yes; shift 2;;
+    --no-verify) VERIFY=no; shift;;
+    --no-restart) RESTART=no; shift;;
+    --endpoint) ENDPOINT="${2:-}"; [ -n "$ENDPOINT" ] || die "--endpoint 需要参数"; shift 2;;
+    --) shift; KEY="${1:-}"; break;;
+    -*) die "未知选项 $1";;
+    *) KEY="$1"; shift;;
+  esac
+done
+
+# --clear 延后到参数解析完再执行，这样 --env 写在 --clear 前后都成立。
+if [ "$MODE" = clear ]; then
+  if [ "$ENV_GIVEN" = yes ]; then
+    clear_env "$ENVNAME"
+  else
+    rm -f "$KEYS" && echo "已清除 $KEYS（全部变量）" || die "删除失败"
+  fi
+  restart_and_report
+  exit 0
+fi
+
+[ -n "$KEY" ] || die "用法：dsh-set-key [--env NAME] <key> | --show | --clear [--env NAME]"
+
+write_env "$ENVNAME" "$KEY"
+echo "已写入 $KEYS（变量名 $ENVNAME）"
+
+[ "$RESTART" = yes ] || { echo "(--no-restart：跳过重启与验证)"; exit 0; }
+
+if [ "$VERIFY" = yes ]; then
+  echo "== 真调 API 验证 =="
+  if verify "$KEY" "$ENDPOINT"; then
+    echo "== 重启服务 =="; restart_and_report
+  else
+    echo "== key 未通过校验，仍已写入（--clear 可撤销），重启让 Web UI 至少能打开 =="
+    restart_and_report; exit 1
+  fi
+else
+  echo "== 跳过校验（--no-verify），重启服务 =="
+  restart_and_report
+fi

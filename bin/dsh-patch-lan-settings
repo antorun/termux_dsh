@@ -1,0 +1,65 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# 让 dsh Web UI 在**局域网地址**下也开放「设置」（模型/通用）
+#
+# 背景（源码实证）：
+#   @deepseek-ai/dsh-client-connection/lib/client.js
+#     isLoopback: transport?.ownsHost === true
+#              || pageLocation === void 0
+#              || isLoopbackHostname(pageLocation.hostname)
+#   pageLocation 就是浏览器的 location，所以在 http://192.168.x.x 下必然为 false。
+#   而 dsh-client-ui-settings 用它决定设置镜像的持久化模式：
+#     const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";
+#   "memory" 模式下 mirror.load() 直接 return，永不向 Host 取 describe →
+#   设置页报「settings are unavailable in this browser」。
+#
+# 修法：把这一行强制为 true。只影响「浏览器经非 loopback 地址打开」的场景
+# （桌面端 ownsHost=true、Node 侧 pageLocation 为 undefined 时本来就是 true）。
+# 服务端那道 Host/Origin 围栏（isTrustedApiRequest）不受影响，
+# 仍由 --trusted-host 控制，鉴权仍要 cookie。
+set -u
+export PREFIX=/data/data/com.termux/files/usr
+export PATH="$PREFIX/bin:$PREFIX/bin/applets:$PATH"
+
+D="$PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai"
+F="$D/dsh-client-connection/lib/client.js"
+BAK_DIR="$HOME/dsh-termux/backups"
+BAK="$BAK_DIR/client.js.orig"
+MARK="dsh-termux-lan"
+
+[ -f "$F" ] || { echo "✗ 找不到 $F"; exit 1; }
+echo "目标: $F  ($(wc -c < "$F") bytes)"
+
+if grep -q "$MARK" "$F"; then
+  echo "✓ 已经打过补丁，跳过"
+else
+  mkdir -p "$BAK_DIR"
+  [ -f "$BAK" ] || { cp -a "$F" "$BAK" && echo "  已备份原始文件 → $BAK"; }
+  python3 - "$F" "$MARK" <<'PY'
+import sys, re, pathlib
+path, mark = sys.argv[1], sys.argv[2]
+p = pathlib.Path(path)
+s = p.read_text(encoding="utf-8")
+pat = (r"isLoopback:\s*transport\?\.ownsHost\s*===\s*true\s*\|\|\s*"
+       r"pageLocation\s*===\s*void 0\s*\|\|\s*"
+       r"isLoopbackHostname\(pageLocation\.hostname\)")
+m = re.search(pat, s)
+if not m:
+    sys.exit("✗ 没匹配到 isLoopback 那一行，dsh 版本可能变了，停手")
+print("  原文:", s[m.start():m.end()][:120])
+s = s[:m.start()] + "isLoopback: true /* " + mark + " */" + s[m.end():]
+p.write_text(s, encoding="utf-8")
+print("  已替换")
+PY
+  [ $? -eq 0 ] || exit 1
+fi
+
+echo "== 复查 =="
+grep -o "isLoopback: true /\* $MARK \*/" "$F" | sed 's/^/  ✓ /'
+echo "  pageLocation 其它引用（应仍在，未误伤）: $(grep -c 'pageLocation' "$F") 处"
+python3 -c "import pathlib,sys; sys.exit(0 if 'isLoopbackHostname' in pathlib.Path('$F').read_text() else 1)" \
+  && echo "  ✓ 工具函数 isLoopbackHostname 仍在" || echo "  ! isLoopbackHostname 丢了"
+
+echo "== 重启服务让 bundler 重新出包 =="
+sv restart dsh-web >/dev/null 2>&1; sleep 5
+sv status dsh-web | sed 's/^/  /'
+curl -s -o /dev/null -w "  loopback 无令牌 %{http_code}（期望 401）\n" http://127.0.0.1:3080/

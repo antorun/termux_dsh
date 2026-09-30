@@ -1,0 +1,126 @@
+#!/data/data/com.termux/files/usr/bin/node
+/*
+ * dsh-lan-gateway -- 把只监听 127.0.0.1 的 dsh web 暴露到局域网。
+ *
+ * 为什么必须有这一层：dsh 的 webserver 配置只接受 "127.0.0.1" | "0.0.0.0"，
+ * 传局域网 IP 直接校验失败（ValidationError: $.host expected "127.0.0.1" | "0.0.0.0"）；
+ * 而 0.0.0.0 在启动期被显式拒绝，原文：
+ *   --host 0.0.0.0 is intentionally not supported yet for safety:
+ *   it would expose remote code execution to the network
+ * 所以 dsh 本体永远只绑 loopback，局域网入口只能由外部转发层提供。
+ *
+ * 为什么是裸 TCP 转发（一个 header 都不改）：
+ *   · 浏览器侧的 authority 就是 http://<lan-ip>:3080；dsh 的 /api 围栏比对
+ *     请求的 Host/Origin，在 dsh 侧加 `--trusted-host <lan-ip>`（端口无关的
+ *     IP 字面量，匹配任意端口）即可放行 —— 转发层无需碰任何 header。
+ *   · 对话流走 WebSocket；裸转发下升级握手天然透传。若改成 HTTP 头改写，
+ *     keep-alive 连接上的后续请求不会被改到（Host 对不上 → 403），反而会坏。
+ *
+ * 用法:
+ *   dsh-lan-gateway <listenHost|auto> <listenPort> <upstreamHost> <upstreamPort>
+ *   auto = 每次绑定前重新解析局域网 IP（Wi-Fi 还没起来时自动重试）。
+ */
+'use strict'
+
+const net = require('net')
+const { execSync } = require('child_process')
+
+const argv = process.argv.slice(2)
+if (argv.length < 4) {
+  console.error('用法: dsh-lan-gateway <listenHost|auto> <listenPort> <upstreamHost> <upstreamPort>')
+  process.exit(2)
+}
+
+const LISTEN_HOST = argv[0]
+const LISTEN_PORT = Number(argv[1])
+const UP_HOST = argv[2]
+const UP_PORT = Number(argv[3])
+
+const RETRY_MS = 5000
+const RECHECK_MS = 20000
+
+/** 与 dsh-lan-ip 同一套取址规则：解析无参 ifconfig，优先 wlan0、跳过 lo/vgate0。 */
+function lanIp() {
+  try {
+    const out = execSync('ifconfig 2>/dev/null', { encoding: 'utf8', timeout: 5000 })
+    let iface = ''
+    let fallback = ''
+    for (const line of out.split('\n')) {
+      const m = /^([A-Za-z0-9][A-Za-z0-9_.-]*):/.exec(line)
+      if (m) {
+        iface = m[1]
+        continue
+      }
+      const i = /^\s+inet\s+(?:addr:)?([0-9.]+)/.exec(line)
+      if (!i) continue
+      const ip = i[1]
+      if (ip === '127.0.0.1') continue
+      if (iface === 'wlan0') return ip
+      if (iface !== 'vgate0' && fallback === '') fallback = ip
+    }
+    return fallback
+  } catch {
+    return ''
+  }
+}
+
+function onConnection(client) {
+  const upstream = net.connect(UP_PORT, UP_HOST)
+  client.setNoDelay(true)
+  upstream.setNoDelay(true)
+  // 任一端断开或出错就成对销毁，避免半开连接堆积。
+  const teardown = () => {
+    client.destroy()
+    upstream.destroy()
+  }
+  client.on('error', teardown)
+  upstream.on('error', teardown)
+  client.on('close', teardown)
+  upstream.on('close', teardown)
+  client.pipe(upstream)
+  upstream.pipe(client)
+}
+
+let server = null
+let boundHost = null
+
+function bind() {
+  const host = LISTEN_HOST === 'auto' ? lanIp() : LISTEN_HOST
+  if (!host) {
+    console.error(`dsh-lan-gateway: 还没有局域网 IP，${RETRY_MS / 1000} 秒后重试`)
+    setTimeout(bind, RETRY_MS)
+    return
+  }
+  if (server && boundHost === host && server.listening) return
+  if (server) {
+    const old = server
+    server = null
+    boundHost = null
+    try {
+      old.close()
+    } catch {}
+  }
+  const s = net.createServer(onConnection)
+  s.on('error', (err) => {
+    console.error(`dsh-lan-gateway: 监听 ${host}:${LISTEN_PORT} 失败：${err.message}；${RETRY_MS / 1000} 秒后重试`)
+    setTimeout(bind, RETRY_MS)
+  })
+  s.listen(LISTEN_PORT, host, () => {
+    boundHost = host
+    console.log(`dsh-lan-gateway: http://${host}:${LISTEN_PORT}/  ->  ${UP_HOST}:${UP_PORT}`)
+  })
+  server = s
+}
+
+bind()
+
+// 换 Wi-Fi / 重新分配 IP 时自动重建监听。
+setInterval(() => {
+  if (LISTEN_HOST !== 'auto') return
+  const want = lanIp()
+  if (want && want !== boundHost) {
+    console.log(`dsh-lan-gateway: 局域网 IP 变了 ${boundHost} -> ${want}，重建监听`)
+    console.log('  ！dsh-web 的 --trusted-host 仍是旧 IP，请执行: sv restart dsh-web')
+    bind()
+  }
+}, RECHECK_MS)

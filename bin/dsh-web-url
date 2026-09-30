@@ -1,0 +1,114 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# dsh-web-url —— 打印当前 dsh web 的带令牌访问 URL
+#
+#   dsh-web-url           只打印 loopback URL（Termux 终端里可直接点击打开）
+#   dsh-web-url --gw      打印控制网关首页 URL（http://<lan-ip>:8030/，需 dsh-ctl 在跑）
+#   dsh-web-url --app     打印经网关进入 dsh 主界面的带令牌 URL（:8030/app?token=…）
+#   dsh-web-url --lan     打印裸转发 URL（http://<lan-ip>:3080/，需 dsh-lan 在跑）
+#   dsh-web-url --all     loopback + 网关首页 + 网关主界面 + 裸转发 全给
+#   dsh-web-url --open    顺带用设备上的系统浏览器打开
+#   dsh-web-url --tunnel  打印从电脑经 SSH 隧道访问的命令
+#
+# 令牌每次启动都会变，所以永远从日志里取最新，不要缓存。
+
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+LOGDIR="${LOGDIR:-$PREFIX/var/log}"
+LOG="$LOGDIR/sv/dsh-web/current"
+GW_PORT="${GW_PORT:-8030}"
+LAN_PORT="${LAN_PORT:-3080}"
+
+if [ ! -e "$LOG" ]; then
+  echo "✗ 日志不存在：$LOG" >&2
+  echo "  服务没启动？试： sv status dsh-web   /   sv up dsh-web" >&2
+  exit 1
+fi
+
+URL=$(grep -aoE 'http://[^[:space:]]+token=[A-Za-z0-9_-]+' "$LOG" 2>/dev/null | tail -1)
+
+if [ -z "$URL" ]; then
+  echo "✗ 日志里还没有带令牌的 URL（服务可能刚重启或启动失败）。" >&2
+  echo "  --- 日志尾部 ---" >&2
+  tail -25 "$LOG" >&2
+  exit 1
+fi
+
+# 取局域网地址：优先 SSH_CONNECTION（第 3 个字段就是本机地址），否则解析无参 ifconfig。
+# 注意 'ifconfig wlan0'（带接口名）输出为空，只有无参 ifconfig 才列得出。
+lan_ip() {
+  if [ -n "${SSH_CONNECTION:-}" ]; then
+    set -- $SSH_CONNECTION
+    if [ -n "${3:-}" ]; then printf '%s\n' "$3"; return; fi
+  fi
+  ifconfig 2>/dev/null | awk '
+    /^[A-Za-z0-9_.]+:/ { n = $1; sub(/:.*/, "", n) }
+    /inet / {
+      ip = $2; sub(/^addr:/, "", ip)
+      if (n == "wlan0") { print ip; exit }
+      if (ip != "127.0.0.1" && n != "vgate0" && fb == "") fb = ip
+    }
+    END { if (fb != "") print fb }
+  ' 2>/dev/null | head -1
+}
+
+lan_url() {
+  IP=$(lan_ip)
+  [ -n "$IP" ] || return 1
+  printf '%s\n' "$URL" | sed "s|127\.0\.0\.1|$IP|" | sed "s|:$LAN_PORT/|:$LAN_PORT/|"
+}
+
+gw_home() {
+  IP=$(lan_ip)
+  [ -n "$IP" ] || return 1
+  printf 'http://%s:%s/\n' "$IP" "$GW_PORT"
+}
+
+gw_url() {
+  IP=$(lan_ip)
+  [ -n "$IP" ] || return 1
+  TOK=$(printf '%s\n' "$URL" | sed -n 's|.*token=\([A-Za-z0-9_-]*\).*|\1|p')
+  printf 'http://%s:%s/app?token=%s\n' "$IP" "$GW_PORT" "$TOK"
+}
+
+case "${1:-}" in
+  --open)
+    termux-open-url "$URL" >/dev/null 2>&1 || echo "(termux-open-url 打开失败，请手动点击上面的链接)" >&2
+    ;;
+  --gw)
+    gw_home || { echo "✗ 取不到局域网 IP" >&2; exit 1; }
+    ;;
+  --app)
+    gw_url || { echo "✗ 取不到局域网 IP" >&2; exit 1; }
+    ;;
+  --lan)
+    lan_url || { echo "✗ 取不到局域网 IP" >&2; exit 1; }
+    ;;
+  --all)
+    printf 'loopback     : %s\n' "$URL"
+    printf '网关控制台   : '; gw_home || echo "(取不到局域网 IP)"
+    printf '网关-dsh界面 : '; gw_url || echo "(取不到局域网 IP)"
+    printf '裸转发       : '; lan_url || echo "(取不到局域网 IP)"
+    ;;
+  --tunnel)
+    PORT=$(printf '%s' "$URL" | sed -n 's|.*127\.0\.0\.1:\([0-9]*\)/.*|\1|p')
+    [ -z "$PORT" ] && PORT=3080
+    IP=$(lan_ip)
+    [ -z "$IP" ] && IP="<手机IP：跑 ifconfig 看 wlan0 那块的 inet>"
+    echo ""
+    echo "在电脑上执行（保持这个终端开着）："
+    echo "  ssh -N -L $PORT:127.0.0.1:$PORT -p 8022 ${USER:-$(whoami)}@$IP"
+    echo ""
+    echo "然后把上面 URL 里的 127.0.0.1 原样粘到电脑浏览器（隧道已把它接到手机）。"
+    echo "走隧道时浏览器看到的是 127.0.0.1 —— 客户端会把自己认成 loopback，"
+    echo "「设置」页原生可用，不需要任何补丁。"
+    echo ""
+    echo "如果 dsh-ctl / dsh-lan 服务在跑，也可以不走隧道、直接用局域网地址："
+    printf '  网关控制台   : '; gw_home 2>/dev/null || echo "(取不到)"
+    printf '  网关-dsh界面 : '; gw_url 2>/dev/null || echo "(取不到)"
+    printf '  裸转发       : '; lan_url 2>/dev/null || echo "(取不到)"
+    ;;
+  *)
+    echo "$URL"
+    ;;
+esac
+
+exit 0

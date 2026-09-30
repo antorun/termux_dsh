@@ -1,0 +1,146 @@
+########## A. 环境 ##########
+node       : v24.18.0 (/data/data/com.termux/files/usr/bin/node)
+npm        : 11.20.0
+python     : Python 3.14.6
+arch       : aarch64
+android    : 16
+prefix     : /data/data/com.termux/files/usr
+
+########## B. 全局 npm 包（只看 @deepseek-ai） ##########
+dsh
+dsh 版本   : 0.1.7-rc.2
+
+########## C. 自己装的执行文件（$PREFIX/bin 下 dsh-* / 相关） ##########
+  dsh                        11279 B  #!/data/data/com.termux/files/usr/bin/node --e
+  dsh-web-url                 4272 B  #!/data/data/com.termux/files/usr/bin/sh
+  dsh-lan-ip                  1463 B  #!/data/data/com.termux/files/usr/bin/sh
+  dsh-lan-gateway             4240 B  #!/data/data/com.termux/files/usr/bin/node
+  dsh-ctl-gateway            30700 B  #!/data/data/com.termux/files/usr/bin/node
+  dsh-set-key                 6123 B  #!/data/data/com.termux/files/usr/bin/bash
+  dsh-set-provider           16171 B  #!/data/data/com.termux/files/usr/bin/bash
+  dsh-patch-lan-settings      2953 B  #!/data/data/com.termux/files/usr/bin/bash
+  --- \$PREFIX/share/dsh-ctl/ ---
+    drwx------.  2 u0_a383 u0_a383  3452 Sep 30 08:47 .
+    drwx------. 82 u0_a383 u0_a383  3452 Sep 30 08:47 ..
+    -rw-r--r--.  1 u0_a383 u0_a383 15957 Sep 30 09:03 panel.html
+
+########## D. runit 服务（termux-services） ##########
+  [dsh-web] run: dsh-web: (pid 20303) 293s; run: log: (pid 5316) 60244s
+       down 文件: 无
+       run     : # dsh-web —— DeepSeek Harness 浏览器 UI 守护服务（termux-services / runit） # URL 与本次不一致；固定端口 + dsh-web-url 才自洽。 # 为什么只用 loopback：dsh 主动拒绝 --host 0.0.0.0（安全设计）。 # 令牌每次启动都不同，用 dsh-web-url 取当前值。 export PREFIX="/data/data/com.termux/files/usr" export HOME="/data/data/com.
+       log/run : 有
+  [dsh-lan] run: dsh-lan: (pid 28811) 2678s; run: log: (pid 27587) 2777s
+       down 文件: 无
+       run     : # dsh-lan —— 把 dsh web（只监听 127.0.0.1:3080）转发到局域网。 # 关掉它不影响 dsh-web 本体，SSH 隧道那条路照旧可用： #   sv down dsh-lan     # 临时关掉局域网入口 #   sv up dsh-lan       # 再打开 # 安全提示：dsh 官方拒绝直接绑 0.0.0.0，理由是这个 Web UI 等于远程代码执行入口。 # 本转发层把入口收窄到「本机局域网 IP + 3080」，且 dsh 自带一次性令牌 + export PREF
+       log/run : 有
+  [dsh-ctl] run: dsh-ctl: (pid 13712) 1057s; run: log: (pid 32492) 1992s
+       down 文件: 无
+       run     : # dsh-ctl —— 局域网上的 dsh「控制台 + 入口」网关，监听 <lan-ip>:8030。 #   http://<lan-ip>:8030/          入口：未登录给落地页，已登录直接是 dsh 主界面 # /ctl 复用 dsh 自己的登录 cookie，不额外设口令。 #   sv down dsh-ctl     # 关掉这个入口（不影响 dsh-web 本体、不影响 SSH 隧道） #   sv up dsh-ctl       # 再打开 export PREFIX="/data/
+       log/run : 有
+
+########## E. dsh-web 实际启动命令行 ##########
+  pid=20303
+    /data/data/com.termux/files/usr/bin/node --expose-internals /data/data/com.termux/files/usr/bin/dsh web --port 3080 --no-open --trusted-host 192.168.3.190 
+
+########## F. 补丁器状态（~/dsh-termux/patches.py --list） ##########
+  dsh 安装目录：/data/data/com.termux/files/usr/lib/node_modules/@deepseek-ai/dsh
+  备份目录：    /data/data/com.termux/files/home/.dsh-termux-backup/orig
+  （下面是空跑一遍真实补丁逻辑得到的判定，不写盘）
+    [已打] lib/bin.js                                                                       
+    [已打] node_modules/@deepseek-ai/dsh-app-boot/lib/index.js                              
+    [已打] node_modules/@deepseek-ai/dsh-app-boot/lib/worker/profile-resolution-bootstrap.js
+    [已打] node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js                      
+    [已打] node_modules/@deepseek-ai/dsh-client-connection/lib/client.js                    
+    [已打] node_modules/@deepseek-ai/dsh-fs-local/lib/index.js                              
+    [已打] node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js             
+    [已打] node_modules/@deepseek-ai/node-addon-system/lib/flock.js                         
+
+########## G. 逐一复查每处补丁的落地痕迹 ##########
+  --- ① 启动 shebang --expose-internals ---
+    dsh                                                  #!/data/data/com.termux/files/usr/bin/node --expose-internals
+    index.js                                             import { createRequire, isBuiltin } from "node:module";
+    1:#!/data/data/com.termux/files/usr/bin/node --expose-internals
+  --- ② internalModules() 绕过 node-addon-require-builtin ---
+  --- ③ flock 门 ---
+  --- ④ link(2) -> rename(2) ---
+  --- ⑤ 客户端 isLoopback ---
+    1404:				isLoopback: true /* dsh-termux-lan */,
+
+########## H. 配置与凭据落点 ##########
+  \$DSH_HOME = /data/data/com.termux/files/home/.dsh
+    ~/.dsh/profiles/web/package.json
+    ~/.dsh/profiles/web/cordis.patch.yml
+    ~/.dsh/profiles/web/pnpm-workspace.yaml
+    ~/.dsh/profiles/web/cordis.yml
+    ~/.dsh/profiles/headless/package.json
+    ~/.dsh/profiles/headless/cordis.patch.yml
+    ~/.dsh/profiles/headless/pnpm-workspace.yaml
+    ~/.dsh/profiles/headless/cordis.yml
+    ~/.dsh/.anonymous-user-id
+    ~/.dsh/storages/workspace.json
+    ~/.dsh/logs/startup-2026-09-29T07-42-11.563Z-b2baa105-4e48-4f09-9169-b8bd3d48a11d.log
+    ~/.dsh/logs/startup-2026-09-29T07-46-10.955Z-1aad7a01-c0b1-4e1f-b710-800456f5e003.log
+    ~/.dsh/logs/startup-2026-09-29T07-47-23.633Z-2ca4a5d6-bfbe-4a25-af92-a59f4faa6fa4.log
+    ~/.dsh/logs/startup-2026-09-29T08-20-30.980Z-d4dc5388-39e0-455d-aedc-3561a4adca09.log
+    ~/.dsh/logs/startup-2026-09-30T00-31-13.459Z-2b98e8e9-ad81-41e5-a70a-d1a9b15a1b37.log
+    ~/.dsh/.credentials.yaml
+  --- 服务环境文件 ---
+    -rw-------. 1 u0_a383 u0_a383 68 Sep 30 08:28 /data/data/com.termux/files/usr/var/service/dsh-web/environment
+    export DSH_GATEWAY_API_KEY=<掩码> 
+  --- profiles 下的 provider 覆盖块 ---
+    web: 872 字节，插件=- id: llm-pi-ai,
+    headless: 872 字节，插件=- id: llm-pi-ai,
+
+########## I. 备份与工作目录 ##########
+  total 143
+  drwx------.  3 u0_a383 u0_a383  3452 Sep 30 08:55 .
+  drwx------. 26 u0_a383 u0_a383  3452 Sep 30 08:37 ..
+  drwx------.  2 u0_a383 u0_a383  3452 Sep 30 09:03 backups
+  -rwxr-xr-x.  1 u0_a383 u0_a383  3824 Sep 29 15:54 build-flock.sh
+  -rwxr-xr-x.  1 u0_a383 u0_a383 27074 Sep 30 08:52 dsh-ctl-gateway
+  -rw-r--r--.  1 u0_a383 u0_a383 15721 Sep 30 08:52 dsh-ctl-panel.html
+  -rwxr-xr-x.  1 u0_a383 u0_a383   960 Sep 30 08:52 dsh-ctl.run
+  -rwxr-xr-x.  1 u0_a383 u0_a383  4240 Sep 30 08:34 dsh-lan-gateway
+  -rwxr-xr-x.  1 u0_a383 u0_a383  1463 Sep 30 08:34 dsh-lan-ip
+  -rwxr-xr-x.  1 u0_a383 u0_a383   925 Sep 30 08:34 dsh-lan.run
+  -rwxr-xr-x.  1 u0_a383 u0_a383  2953 Sep 30 08:52 dsh-patch-lan-settings
+  -rw-------.  1 u0_a383 u0_a383  6123 Sep 30 08:25 dsh-set-key
+  -rwx------.  1 u0_a383 u0_a383 16171 Sep 30 08:54 dsh-set-provider
+  -rwxr-xr-x.  1 u0_a383 u0_a383  3712 Sep 30 08:52 dsh-web-url
+  -rwxr-xr-x.  1 u0_a383 u0_a383  6554 Sep 29 15:58 install-web-service.sh
+  -rwxr-xr-x.  1 u0_a383 u0_a383  2724 Sep 29 15:54 install.sh
+  -rw-r--r--.  1 u0_a383 u0_a383 16479 Sep 30 08:53 patches.py
+  --- backups ---
+    drwx------. 2 u0_a383 u0_a383  3452 Sep 30 09:03 .
+    drwx------. 3 u0_a383 u0_a383  3452 Sep 30 08:55 ..
+    -rw-------. 1 u0_a383 u0_a383 59411 Sep 29 15:11 client.js.orig
+    -rwxr-xr-x. 1 u0_a383 u0_a383  2717 Sep 29 15:58 dsh-web-url.20260930083434
+    -rwxr-xr-x. 1 u0_a383 u0_a383  2943 Sep 30 08:34 dsh-web-url.20260930084739
+    -rwxr-xr-x. 1 u0_a383 u0_a383  3712 Sep 30 08:47 dsh-web-url.20260930085220
+    -rwxr-xr-x. 1 u0_a383 u0_a383  3712 Sep 30 08:52 dsh-web-url.20260930090130
+    -rwxr-xr-x. 1 u0_a383 u0_a383  4272 Sep 30 09:01 dsh-web-url.20260930090306
+    -rwxr-xr-x. 1 u0_a383 u0_a383  1428 Sep 30 08:07 dsh-web.run.20260930083434
+    -rw-r--r--. 1 u0_a383 u0_a383 15028 Sep 29 15:56 patches.py.bak.20260930085326
+    -rw-r--r--. 1 u0_a383 u0_a383 16479 Sep 30 08:53 patches.py.bak.20260930085330
+    -rwxr-xr-x. 1 u0_a383 u0_a383  1016 Sep 29 15:58 run.bak-20260930080736
+
+########## J. Termux 侧为此装的系统包（编译原生插件相关） ##########
+  nodejs-lts             24.18.0-1
+  clang                  21.1.8-3
+  make                   4.4.1-1
+  python                 3.14.6-1
+  git                    2.55.0
+  --- 编译产物（.node）---
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/node-addon-system-android-arm64/bin/system.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/@koromix/koffi-android-arm64/android_arm64/koffi.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty/prebuilds/darwin-arm64/pty.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty/prebuilds/darwin-x64/pty.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty/prebuilds/win32-arm64/conpty_console_list.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty/prebuilds/win32-arm64/conpty.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty/prebuilds/win32-x64/conpty_console_list.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty/prebuilds/win32-x64/conpty.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty/prebuilds/linux-arm64/pty.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty/prebuilds/linux-x64/pty.node
+    $PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/node-pty/build/Release/pty.node
+
+########## 盘点结束 ##########

@@ -1,0 +1,775 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# dsh-set-provider —— 把 dsh 的模型后端切到第三方
+#
+# dsh 里有两个 LLM 插件，对应两种「第三方接法」：
+#
+# ① anthropic-messages（默认）—— 改插件 llm-deepseek
+#    请求体 {model, messages, max_tokens, thinking, tools[]}，鉴权头 x-api-key，
+#    打到 {baseURL}/v1/messages。
+#    → 第三方必须提供 **Anthropic Messages 兼容端点**（各家给 Claude Code 的那条）。
+#
+# ② openai-completions —— 改插件 llm-pi-ai
+#    标准 POST {baseURL}/chat/completions + Authorization: Bearer。
+#    → 绝大多数网关都行（vLLM / one-api / new-api / LiteLLM / 各类聚合站）。
+#    这条路走 pi-ai 的通用路由：providers 是**字典**，键名就是 provider id。
+#
+# 怎么选：端点是 /anthropic 结尾、或文档写「Anthropic 兼容」→ ①；
+#         端点是 /v1、模型名带 org/ 前缀、能用 GET {baseURL}/models 列出来 → ②。
+# 拿不准就先用 ② 试，因为它只要求标准 OpenAI 协议。
+#
+# 用法：
+#   dsh-set-provider                                    查看当前后端
+#   dsh-set-provider --list                             列预置端点
+#   dsh-set-provider <预置名> --key <KEY> --model <id>[,<id>...]
+#   dsh-set-provider --base-url <URL> [--api <协议>] --key <KEY> --model <id>
+#   dsh-set-provider --clear                            回到 DeepSeek 官方默认
+#
+# 多账号模式（8030 控制台用的就是这条）：
+#   dsh-set-provider --accounts-file <json> [--no-restart]
+#
+#   清单是一个账号数组，每个账号有自己的路由 id、协议、端点、凭据变量
+#   和模型列表；`active` 指出当前用哪个账号的哪个模型。全部账号都会写进
+#   llm-pi-ai 的 providers 字典 —— 也就是说配了 N 个账号，dsh 里就有 N 组
+#   模型可随时切换，而不是只有一个生效。
+#
+#   {
+#     "active": "dahl",
+#     "accounts": [
+#       {"id":"dahl","displayName":"Dahl 聚合网关","api":"openai-completions",
+#        "baseURL":"https://inference.dahl.global/v1","keyVar":"DSH_DAHL_KEY",
+#        "defaultModel":"deepseek-ai/DeepSeek-V4-Flash-0731",
+#        "models":["deepseek-ai/DeepSeek-V4-Flash-0731"]},
+#       {"id":"zhipu","displayName":"智谱 GLM","api":"anthropic-messages",
+#        "baseURL":"https://open.bigmodel.cn/api/anthropic","keyVar":"DSH_ZHIPU_KEY",
+#        "models":["glm-5"]}
+#     ]
+#   }
+#
+#   写之前自动备份、写完用 `dsh --dump-config` 组合校验，失败立刻回滚 + 重启。
+#   凭据本身不在这里写，用 dsh-set-key 各自写入 keyVar 指向的环境变量。
+#
+# 接口模式（多接口、每接口多 token；8030 控制台的当前形态）：
+#   dsh-set-provider --sites-file <json> [--no-restart]
+#
+#   「接口」= 一个 baseURL + 协议；「token」= 这个接口上的一把钥匙，
+#   自带备注（备注就是它在 dsh 里的显示名）。一个接口挂 N 把 token，
+#   每把 token 各自一组模型 —— 限流了就换一把，不用重配端点。
+#
+#   {
+#     "active": {"site":"dahl","token":"t1"},
+#     "sites": [
+#       {"id":"dahl","name":"Dahl 聚合","api":"openai-completions",
+#        "baseURL":"https://inference.dahl.global/v1",
+#        "tokens":[
+#          {"id":"t1","note":"主号","keyVar":"DSH_DAHL_T1",
+#           "defaultModel":"deepseek-ai/DeepSeek-V4-Flash-0731",
+#           "models":["deepseek-ai/DeepSeek-V4-Flash-0731"]},
+#          {"id":"t2","note":"备用号","keyVar":"DSH_DAHL_T2",
+#           "models":["deepseek-ai/DeepSeek-V4-Flash-0731"]},
+#          {"id":"t3","note":"停用中","keyVar":"DSH_DAHL_T3","enabled":false,
+#           "models":["deepseek-ai/DeepSeek-V4-Flash-0731"]}
+#        ]}
+#     ]
+#   }
+#
+#   路由 id = "<接口 id>-<token id>"（如 dahl-t1），每把 token 一条路由 ——
+#   所以 dsh 自己的模型选择器里能直接在同一接口的多把 token 之间切换。
+#   token 上的 "enabled": false 是停用开关：那把 token 留在清单里但**不写路由**
+#   （面板上第一列的开关就是它）。
+#   只有 **已经存过凭据** 的 token 才会写进配置：凭据还没落盘的 token 会被
+#   跳过并在 stderr 上列出来（写进去只会让 dsh 报 MISSING_CREDENTIAL）。
+#   当前激活的那把 token 必须「启用 + 有凭据」，否则直接报错不动文件。
+#
+# 选项：
+#   --key K              顺便写 key（走 dsh-set-key --no-verify），不写则只改配置
+#   --model M[,M...]     模型 id；第三方必填（各家命名不同，不猜）
+#                        首次出现 = 覆盖（预置自带的模型列表会被顶掉），
+#                        再次出现 = 追加。所以「预置名 + --model」不会重复写入。
+#                        最终列表还会按 id 去重。
+#   --api P              anthropic-messages | openai-completions；给预置名时自动带上
+#   --provider-id ID     openai 模式下的路由 id（默认 gateway），必须小写连字符
+#   --key-var NAME       凭据环境变量名（默认：openai→DSH_GATEWAY_API_KEY，anthropic→DEEPSEEK_API_KEY）
+#   --max-tokens N       单次输出上限，默认 8192（官方默认 256000，第三方多半直接拒）
+#   --context-window N   上下文容量，默认 131072
+#   --thinking           打开思考（仅 anthropic 模式；默认关，兼容性最好）
+#   --profile "web headless"  改哪些 profile，默认两个都改
+#   --no-restart         不重启不验证
+#
+# ⚠️ 两个 profile 的 cordis.patch.yml 是**空数组 []**时也必须保留那个 []：
+#    只有注释没有 [] 的 YAML 会解析成 null，dsh 起不来（实测踩过，服务直接 down）。
+set -u
+export PATH="$PREFIX/bin:$PREFIX/bin/applets:$PATH"
+
+DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
+SVD="$PREFIX/var/service/dsh-web"
+PROFILES="web headless"
+BG="# >>> dsh-provider"
+ED="# <<< dsh-provider"
+
+die() { echo "$*" >&2; exit 1; }
+
+preset_url() {
+  case "$1" in
+    deepseek)    echo "https://api.deepseek.com/anthropic" ;;
+    zhipu)       echo "https://open.bigmodel.cn/api/anthropic" ;;
+    zai)         echo "https://api.z.ai/api/anthropic" ;;
+    kimi)        echo "https://api.moonshot.cn/anthropic" ;;
+    ark)         echo "https://ark.cn-beijing.volces.com/api/coding" ;;
+    dashscope)   echo "https://dashscope.aliyuncs.com/api/v2/apps/claude-code-proxy" ;;
+    siliconflow) echo "https://api.siliconflow.cn" ;;
+    minimax)     echo "https://api.minimaxi.com/anthropic" ;;
+    dahl)        echo "https://inference.dahl.global/v1" ;;
+    *) return 1 ;;
+  esac
+}
+preset_api() {
+  case "$1" in
+    dahl) echo "openai-completions" ;;
+    *)    echo "anthropic-messages" ;;
+  esac
+}
+preset_models() {
+  case "$1" in
+    dahl) echo "deepseek-ai/DeepSeek-V4-Flash-0731,MiniMaxAI/MiniMax-M2.7,zai-org/GLM-5.3-Flash" ;;
+    *)    echo "" ;;
+  esac
+}
+
+list_presets() {
+  cat <<'TXT'
+① Anthropic Messages 兼容端点（改插件 llm-deepseek）
+   全部用「塞假 key 看谁报错」实测过：返回的是各家自己的鉴权错误，
+   说明 Anthropic 路由存在且请求格式被接受。
+
+  deepseek      https://api.deepseek.com/anthropic                  DeepSeek 官方（默认）
+  zhipu         https://open.bigmodel.cn/api/anthropic              智谱 GLM
+  zai           https://api.z.ai/api/anthropic                      Z.AI（智谱海外）
+  kimi          https://api.moonshot.cn/anthropic                   月之暗面 Kimi
+  ark           https://ark.cn-beijing.volces.com/api/coding        火山方舟
+  dashscope     https://dashscope.aliyuncs.com/api/v2/apps/claude-code-proxy   阿里云百炼
+  siliconflow   https://api.siliconflow.cn                          硅基流动
+  minimax       https://api.minimaxi.com/anthropic                  MiniMax
+
+② OpenAI 兼容端点（改插件 llm-pi-ai，api: openai-completions）
+
+  dahl          https://inference.dahl.global/v1                    Dahl 聚合网关
+                （已带默认模型：DeepSeek-V4-Flash-0731 / MiniMax-M2.7 / GLM-5.3-Flash）
+
+模型 id 不预置 —— 各家改名很快，用服务商文档里的名字，通过 --model 传进来。
+填错会在验证阶段被对方明确报错。
+
+自建/中转（one-api、new-api、LiteLLM 等）：
+  · Anthropic 透传 → --base-url 指向对应根路径（dsh 自动补 /v1/messages）
+  · 只有 OpenAI  → --base-url 指向 /v1 那个根，并加 --api openai-completions
+TXT
+}
+
+show_current() {
+  echo "配置文件："
+  for p in web headless; do
+    f="$DSH_HOME/profiles/$p/cordis.patch.yml"
+    printf '  [%s] %s\n' "$p" "$f"
+    if [ -f "$f" ] && grep -q "$BG" "$f"; then
+      # 多账号时逐个列出路由；单账号时退回原来的简表。
+      if sed -n "/$BG/,/$ED/p" "$f" | grep -q '^    providers:'; then
+        sed -n "/$BG/,/$ED/p" "$f" \
+          | grep -E '^      [a-z][a-z0-9-]*:$|^        (api|baseURL|displayName):|^    (provider|model):' \
+          | sed 's/^[[:space:]]*/      /'
+      else
+        sed -n "/$BG/,/$ED/p" "$f" \
+          | grep -E "^[[:space:]]*(- id: (llm-deepseek|llm-pi-ai)|baseURL:|api:|provider:)" \
+          | sed 's/^[[:space:]]*/      /' | head -8
+      fi
+    else
+      echo "      未设置（用官方默认 https://api.deepseek.com/anthropic）"
+    fi
+  done
+  echo "凭据："
+  dsh-set-key --show 2>/dev/null | sed 's/^/  /' || echo "  (dsh-set-key 不可用)"
+}
+
+patch_file() { # $1=file $2=mode(set|clear) $3=block
+  python3 - "$1" "$BG" "$ED" "$2" "${3:-}" <<'PY'
+import sys, re, pathlib
+path, bg, ed, mode, block = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+p = pathlib.Path(path)
+src = p.read_text() if p.exists() else ""
+m = re.search(re.escape(bg) + r".*?" + re.escape(ed) + r"[^\S\n]*\n?", src, re.S)
+rest = (src[:m.start()] + src[m.end():]) if m else src
+kept = []
+for l in rest.splitlines():
+    if l.strip() in ("", "[]"):
+        continue
+    if l.lstrip().startswith("#") or l.startswith("- ") or l.startswith(" ") or l.startswith("\t"):
+        kept.append(l)
+    else:
+        sys.exit(f"  用户层里有无法安全重排的内容，停手：{l[:60]}")
+body = ([block] if mode == "set" else []) + kept
+# block 是一整段多行字符串，必须先摊平成行，否则下面 startswith("- ") 永远为假，
+# 会往已有条目的序列后面再补一个 [] —— 那是非法 YAML（踩过，服务直接起不来）。
+body = [x for chunk in body for x in chunk.split("\n")]
+real = [l for l in body if not l.lstrip().startswith("#") and l.strip()]
+out = "\n".join(body).rstrip()
+if not any(l.startswith("- ") for l in real):
+    out = (out + "\n[]") if out else "[]"
+p.write_text(out + "\n")
+print(f"  {'已写入' if mode == 'set' else '已清理'} {path}")
+PY
+}
+
+compose_check() { # 用 dsh 自己当 YAML 校验器 + 读回生效值
+  local prof="$1" out rc eff
+  out=$(dsh --dump-config --profile "$prof" 2>&1) || rc=$?
+  if [ "${rc:-0}" != "0" ]; then
+    echo "  ✗ profile $prof 组合失败："
+    printf '%s\n' "$out" | head -20 | sed 's/^/      /'
+    return 1
+  fi
+  eff=$(printf '%s\n' "$out" | awk '/^[[:space:]]*- id: (llm-deepseek|llm-pi-ai)$/{f=1} f&&/baseURL:/{print;exit}')
+  echo "  ✓ profile $prof 组合成功${eff:+；生效的 $(printf '%s' "$eff" | sed 's/^[[:space:]]*//')}"
+}
+
+write_patch() { # $1=profile $2=block —— 写完立刻组合校验，失败自动回滚
+  local prof="$1" block="$2" dir f bak
+  dir="$DSH_HOME/profiles/$prof"
+  [ -d "$dir" ] || { echo "  ! profile $prof 不存在，跳过"; return 0; }
+  f="$dir/cordis.patch.yml"; bak="$f.dsh-provider.bak"
+  cp -a "$f" "$bak" 2>/dev/null || printf '# default\n[]\n' > "$bak"
+  patch_file "$f" set "$block" || die "写 patch 失败"
+  if ! compose_check "$prof"; then
+    cp -a "$bak" "$f"
+    echo "  ↩ 已回滚 $f"
+    sv restart dsh-web >/dev/null 2>&1
+    die "组合校验没过，已回滚并重启服务"
+  fi
+  rm -f "$bak"
+}
+
+clear_patch() {
+  local prof dir f bak
+  for prof in $PROFILES; do
+    dir="$DSH_HOME/profiles/$prof"; f="$dir/cordis.patch.yml"
+    [ -f "$f" ] || continue
+    grep -q "$BG" "$f" || { echo "  $f 本来就没改过，跳过"; continue; }
+    bak="$f.dsh-provider.bak"; cp -a "$f" "$bak"
+    patch_file "$f" clear || die "清理 patch 失败"
+    if ! compose_check "$prof"; then
+      cp -a "$bak" "$f"; sv restart dsh-web >/dev/null 2>&1
+      die "组合校验没过，已回滚并重启服务"
+    fi
+    rm -f "$bak"
+  done
+}
+
+MODE=""; URL=""; KEY=""; MODELS=""; MODELS_SET=no; MAXTOK=8192; CTX=131072; THINK=no; RESTART=yes
+API="anthropic-messages"; API_SET=no
+PROV_ID="gateway"; PROV_ID_SET=no
+KEYVAR_USER=""
+ACCOUNTS_FILE=""
+SITES_FILE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) sed -n '2,/^set -u$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0;;
+    --list) list_presets; exit 0;;
+    --clear) MODE=clear; shift;;
+    --accounts-file) ACCOUNTS_FILE="${2:-}"; shift 2;;
+    --sites-file) SITES_FILE="${2:-}"; shift 2;;
+    --base-url) URL="${2:-}"; MODE=set; shift 2;;
+    --api) API="${2:-}"; API_SET=yes; shift 2;;
+    --provider-id) PROV_ID="${2:-}"; PROV_ID_SET=yes; shift 2;;
+    --key-var) KEYVAR_USER="${2:-}"; shift 2;;
+    --key) KEY="${2:-}"; shift 2;;
+    --model)
+      # 首次显式给 --model 是「覆盖」，之后才是「追加」。
+      # 否则「预置名 + --model」会把预置自带的模型列表再抄一遍
+      # （--model 是累加语义，预置名在它之前已经把 MODELS 填上了）。
+      if [ "$MODELS_SET" = no ]; then MODELS="${2:-}"; MODELS_SET=yes
+      else MODELS="$MODELS,${2:-}"; fi
+      shift 2;;
+    --max-tokens) MAXTOK="${2:-}"; shift 2;;
+    --context-window) CTX="${2:-}"; shift 2;;
+    --thinking) THINK=yes; shift;;
+    --no-restart) RESTART=no; shift;;
+    --profile) PROFILES="${2:-}"; shift 2;;
+    -*) die "未知选项 $1";;
+    *) URL=$(preset_url "$1") || die "未知预置名 $1（--list 看清单）"
+       MODE=set
+       [ "$API_SET" = yes ] || API=$(preset_api "$1")
+       [ -n "$MODELS" ] || MODELS=$(preset_models "$1")
+       shift;;
+  esac
+done
+
+if [ -n "$SITES_FILE" ]; then
+  [ -f "$SITES_FILE" ] || die "找不到接口清单文件：$SITES_FILE"
+  echo "########## 1. 解析接口清单"
+  BLOCK=$(python3 - "$SITES_FILE" "$BG" "$ED" "$SVD/environment" <<'PY'
+import json, re, sys
+
+path, bg, ed, envfile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    cfg = json.load(open(path, encoding='utf-8'))
+except Exception as e:
+    sys.exit('清单不是合法 JSON：%s' % e)
+
+sites = cfg.get('sites')
+if not isinstance(sites, list) or not sites:
+    sys.exit('清单里至少要有一个接口')
+
+# 哪些凭据已经落盘（dsh-set-key 写的就是 export NAME=value 这种行）。
+# 只有配了凭据的 token 才写路由 —— 写进一个读不到凭据的路由，
+# dsh 一请求就 MISSING_CREDENTIAL。
+have = set()
+try:
+    with open(envfile, encoding='utf-8', errors='replace') as fh:
+        for line in fh:
+            m = re.match(r'\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=', line)
+            if m:
+                have.add(m.group(1))
+except OSError:
+    pass
+
+ID_RE = re.compile(r'[a-z][a-z0-9-]*')
+APIS = ('openai-completions', 'anthropic-messages')
+KEY_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+
+clean, site_ids = [], set()
+for s in sites:
+    if not isinstance(s, dict):
+        sys.exit('接口项必须是对象')
+    sid = str(s.get('id') or '').strip()
+    if not ID_RE.fullmatch(sid):
+        sys.exit('接口 id 必须小写字母开头、只含小写字母/数字/连字符：%r' % sid)
+    if sid in site_ids:
+        sys.exit('接口 id 重复：%s' % sid)
+    site_ids.add(sid)
+
+    api = str(s.get('api') or '').strip()
+    if api not in APIS:
+        sys.exit('接口 %s 的协议不支持：%r（可选 %s）' % (sid, api, ' / '.join(APIS)))
+
+    url = str(s.get('baseURL') or '').strip()
+    if not url.startswith(('http://', 'https://')) or len(url) < 12:
+        sys.exit('接口 %s 的 baseURL 必须是 http(s):// 开头' % sid)
+
+    toks = s.get('tokens')
+    if not isinstance(toks, list) or not toks:
+        sys.exit('接口 %s 至少要有一把 token' % sid)
+
+    out_toks, tok_ids = [], set()
+    for t in toks:
+        if not isinstance(t, dict):
+            sys.exit('接口 %s 的 token 项必须是对象' % sid)
+        tid = str(t.get('id') or '').strip()
+        if not ID_RE.fullmatch(tid):
+            sys.exit('接口 %s 里 token id 不合法：%r' % (sid, tid))
+        if tid in tok_ids:
+            sys.exit('接口 %s 里 token id 重复：%s' % (sid, tid))
+        tok_ids.add(tid)
+
+        keyvar = str(t.get('keyVar') or '').strip()
+        if not KEY_RE.fullmatch(keyvar):
+            sys.exit('接口 %s / token %s 的凭据变量名不合法：%r' % (sid, tid, keyvar))
+
+        models, seen = [], set()
+        for m in (t.get('models') or s.get('models') or []):
+            m = str(m).strip()
+            if m and m not in seen:
+                seen.add(m)
+                models.append(m)
+        if not models:
+            sys.exit('接口 %s / token %s 至少要有一个模型 id' % (sid, tid))
+
+        note = str(t.get('note') or '').strip()
+        disp = ('%s · %s' % (str(s.get('name') or sid).strip(), note)) if note \
+            else str(s.get('name') or sid).strip()
+        dflt = str(t.get('defaultModel') or '').strip()
+        if dflt not in models:
+            dflt = models[0]
+        # 停用开关：缺省启用。停用的 token 留在清单里但不写路由。
+        en = t.get('enabled')
+        out_toks.append({'id': tid, 'keyVar': keyvar, 'disp': disp,
+                         'models': models, 'default': dflt,
+                         'enabled': True if en is None else bool(en)})
+
+    clean.append({'id': sid, 'api': api, 'url': url, 'tokens': out_toks})
+
+# 激活项：支持 {"site","token"} 与老的裸字符串两种写法
+act = cfg.get('active')
+if isinstance(act, dict):
+    a_site = str(act.get('site') or '').strip()
+    a_token = str(act.get('token') or '').strip()
+else:
+    a_site = str(act or '').strip()
+    a_token = ''
+if not a_site:
+    a_site = clean[0]['id']
+
+site = next((s for s in clean if s['id'] == a_site), None)
+if site is None:
+    sys.exit('active 指的接口 %r 不在清单里' % a_site)
+if not a_token:
+    a_token = site['tokens'][0]['id']
+tok = next((t for t in site['tokens'] if t['id'] == a_token), None)
+if tok is None:
+    sys.exit('active 指的 token %r 不在接口 %s 里' % (a_token, a_site))
+
+active_rid = '%s-%s' % (site['id'], tok['id'])
+if not tok['enabled']:
+    sys.exit('当前选中的 token「%s」是停用状态，不能当激活项。\n'
+             '  要么把它打开（enabled 去掉或设 true），要么把 active 换成别的 token。'
+             % active_rid)
+if tok['keyVar'] not in have:
+    sys.exit('当前选中的 token「%s」还没配凭据：%s 不在 %s 里。\n'
+             '  先 dsh-set-key --no-verify --env %s <key>，或在控制台里填好它。'
+             % (active_rid, tok['keyVar'], envfile, tok['keyVar']))
+
+q = lambda v: json.dumps(str(v), ensure_ascii=False)
+out = ['%s (dsh-set-provider 管理；手改会被下次覆盖)' % bg,
+       '- id: llm-pi-ai', '  config:', '    providers:']
+registered, skipped = [], []
+for s in clean:
+    for t in s['tokens']:
+        rid = '%s-%s' % (s['id'], t['id'])
+        if not t['enabled']:
+            skipped.append('%s（已停用）' % rid)
+            continue
+        if t['keyVar'] not in have:
+            skipped.append('%s（%s 没配凭据）' % (rid, t['keyVar']))
+            continue
+        registered.append(rid)
+        out += [
+            '      %s:' % rid,
+            '        apiKeyEnv: %s' % q(t['keyVar']),
+            '        displayName: %s' % q(t['disp']),
+            '        api: %s' % q(s['api']),
+            '        baseURL: %s' % q(s['url']),
+            '        defaultContextWindow: 131072',
+            '        defaultMaxTokens: 8192',
+            '        models:',
+        ]
+        for m in t['models']:
+            out += ['          - id: %s' % q(m), '            name: %s' % q(m)]
+if not registered:
+    sys.exit('没有任何 token 能注册成路由（全被停用或缺凭据），这样写出来的是空配置，dsh 起不来。\n'
+             '  至少留一把「启用 + 已配凭据」的 token。')
+
+out += ['- id: agent-default-model', '  config:',
+        '    provider: %s' % q(active_rid), '    model: %s' % q(tok['default']), ed]
+
+# 摘要走 stderr：stdout 只留给那段 YAML（调用方用 $(...) 整段收走）。
+sys.stderr.write('  ✓ %d 个接口 / %d 把 token，注册 %d 条路由：%s\n'
+                 % (len(clean), sum(len(s['tokens']) for s in clean),
+                    len(registered), ' '.join(registered) or '(无)'))
+sys.stderr.write('  ✓ 激活：%s / %s\n' % (active_rid, tok['default']))
+for x in skipped:
+    sys.stderr.write('  ! 跳过 %s\n' % x)
+print('\n'.join(out))
+PY
+) || die "接口清单有问题，未动任何文件"
+
+  # 激活的是哪条路由（摘要行由 python 打在 stderr 上，这里从 YAML 里取回来给后面用）
+  ACTIVE_RID=$(printf '%s\n' "$BLOCK" | sed -n 's/^    provider: "\(.*\)"$/\1/p' | tail -1)
+
+  echo
+  echo "########## 2. 写入 patch（写完立刻校验，失败自动回滚）"
+  for prof in $PROFILES; do write_patch "$prof" "$BLOCK"; done
+
+  if [ "$RESTART" = no ]; then echo; echo "(--no-restart：配置已落盘，未重启)"; exit 0; fi
+
+  echo
+  echo "########## 3. 重启服务"
+  sv restart dsh-web >/dev/null 2>&1; sleep 4
+  sv status dsh-web | sed 's/^/  /'
+  echo "  令牌: $(dsh-web-url 2>/dev/null | grep -aoE 'http://[^[:space:]]+token=[A-Za-z0-9_-]+' | tail -1)"
+
+  echo
+  echo "########## 4. 端到端验证（真跑一次，不猜）"
+  KEYS="$SVD/environment"
+  if [ -f "$KEYS" ]; then set -a; . "$KEYS"; set +a; fi
+  OUT=$(timeout 150 dsh headless "只回答两个字：收到" 2>&1); RC=$?
+  printf '%s\n' "$OUT" | tail -10 | sed 's/^/  /'
+  echo
+  if [ $RC -eq 0 ] && ! printf '%s' "$OUT" | grep -qE "MISSING_CREDENTIAL|AUTH:|TRANSPORT|[Ee]rror"; then
+    echo "  ✅ 激活的 token「$active_rid」跑通，取到模型回复"
+  else
+    echo "  ⚠️ 激活的 token 没跑通，按报错归类："
+    case "$OUT" in
+      *MISSING_CREDENTIAL*) echo "     · 这把 token 的凭据没进到进程 → dsh-set-key --env <keyVar> <key> 补上" ;;
+      *TRANSPORT*) echo "     · 连不上 → baseURL 写错 / 被墙 / 需要代理" ;;
+      *AUTH*|*auth*|*"API key"*) echo "     · 鉴权失败 → 这把 token 与服务商不匹配，或已失效" ;;
+      *) echo "     · 多半是模型 id 不对，换成服务商文档里的名字" ;;
+    esac
+    echo "     · 同接口其它 token 不受影响：在控制台里换一把设为当前即可"
+    exit 1
+  fi
+  exit 0
+fi
+
+if [ -n "$ACCOUNTS_FILE" ]; then
+  [ -f "$ACCOUNTS_FILE" ] || die "找不到账号清单文件：$ACCOUNTS_FILE"
+  echo "########## 1. 解析账号清单"
+  BLOCK=$(python3 - "$ACCOUNTS_FILE" "$BG" "$ED" <<'PY'
+import json, re, sys
+
+path, bg, ed = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    cfg = json.load(open(path, encoding='utf-8'))
+except Exception as e:
+    sys.exit('清单不是合法 JSON：%s' % e)
+
+accounts = cfg.get('accounts')
+if not isinstance(accounts, list) or not accounts:
+    sys.exit('清单里至少要有一个账号')
+
+clean, ids = [], set()
+for a in accounts:
+    if not isinstance(a, dict):
+        sys.exit('账号项必须是对象')
+    aid = str(a.get('id') or '').strip()
+    if not re.fullmatch(r'[a-z][a-z0-9-]*', aid):
+        sys.exit('账号 id 必须小写字母开头、只含小写字母/数字/连字符：%r' % aid)
+    if aid in ids:
+        sys.exit('账号 id 重复：%s' % aid)
+    ids.add(aid)
+
+    api = str(a.get('api') or '').strip()
+    if api not in ('openai-completions', 'anthropic-messages'):
+        sys.exit('账号 %s 的协议不支持：%r（可选 openai-completions / anthropic-messages）' % (aid, api))
+
+    url = str(a.get('baseURL') or '').strip()
+    if not url.startswith(('http://', 'https://')) or len(url) < 12:
+        sys.exit('账号 %s 的 baseURL 必须是 http(s):// 开头' % aid)
+
+    keyvar = str(a.get('keyVar') or '').strip()
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', keyvar):
+        sys.exit('账号 %s 的凭据变量名不合法：%r' % (aid, keyvar))
+
+    models, seen = [], set()
+    for m in (a.get('models') or []):
+        m = str(m).strip()
+        if m and m not in seen:
+            seen.add(m)
+            models.append(m)
+    if not models:
+        sys.exit('账号 %s 至少要有一个模型 id' % aid)
+
+    disp = str(a.get('displayName') or '').strip() or aid
+    dflt = str(a.get('defaultModel') or '').strip()
+    if dflt not in models:
+        dflt = models[0]
+    clean.append({'id': aid, 'api': api, 'url': url, 'keyVar': keyvar,
+                  'disp': disp, 'models': models, 'default': dflt})
+
+active = str(cfg.get('active') or '').strip() or clean[0]['id']
+if active not in ids:
+    sys.exit('active=%r 不在账号清单里' % active)
+
+q = lambda s: json.dumps(s, ensure_ascii=False)
+out = ['%s (dsh-set-provider 管理；手改会被下次覆盖)' % bg, '- id: llm-pi-ai', '  config:', '    providers:']
+for a in clean:
+    out += [
+        '      %s:' % a['id'],
+        '        apiKeyEnv: %s' % q(a['keyVar']),
+        '        displayName: %s' % q(a['disp']),
+        '        api: %s' % q(a['api']),
+        '        baseURL: %s' % q(a['url']),
+        '        defaultContextWindow: 131072',
+        '        defaultMaxTokens: 8192',
+        '        models:',
+    ]
+    for m in a['models']:
+        out += ['          - id: %s' % q(m), '            name: %s' % q(m)]
+act = [a for a in clean if a['id'] == active][0]
+out += ['- id: agent-default-model', '  config:',
+        '    provider: %s' % q(active), '    model: %s' % q(act['default']), ed]
+print('\n'.join(out))
+PY
+) || die "账号清单有问题，未动任何文件"
+
+  N=$(printf '%s\n' "$BLOCK" | grep -cE '^      [a-z][a-z0-9-]*:$')
+  echo "  ✓ $N 个账号：$(printf '%s\n' "$BLOCK" | grep -E '^      [a-z][a-z0-9-]*:$' | tr -d ' :' | tr '\n' ' ')"
+  echo "  ✓ 激活：$(printf '%s\n' "$BLOCK" | grep -A2 '^- id: agent-default-model' | grep -E '^    provider:|^    model:' | tr -d ' ' | tr '\n' ' ')"
+
+  echo
+  echo "########## 2. 写入 patch（写完立刻校验，失败自动回滚）"
+  for prof in $PROFILES; do write_patch "$prof" "$BLOCK"; done
+
+  if [ "$RESTART" = no ]; then echo; echo "(--no-restart：配置已落盘，未重启)"; exit 0; fi
+
+  echo
+  echo "########## 3. 重启服务"
+  sv restart dsh-web >/dev/null 2>&1; sleep 4
+  sv status dsh-web | sed 's/^/  /'
+  echo "  令牌: $(dsh-web-url 2>/dev/null | grep -aoE 'http://[^[:space:]]+token=[A-Za-z0-9_-]+' | tail -1)"
+
+  echo
+  echo "########## 4. 端到端验证（真跑一次，不猜）"
+  KEYS="$SVD/environment"
+  if [ -f "$KEYS" ]; then set -a; . "$KEYS"; set +a; fi
+  OUT=$(timeout 150 dsh headless "只回答两个字：收到" 2>&1); RC=$?
+  printf '%s\n' "$OUT" | tail -10 | sed 's/^/  /'
+  echo
+  if [ $RC -eq 0 ] && ! printf '%s' "$OUT" | grep -qE "MISSING_CREDENTIAL|AUTH:|TRANSPORT|[Ee]rror"; then
+    echo "  ✅ 激活账号「$active」跑通，取到模型回复"
+  else
+    echo "  ⚠️ 激活账号没跑通，按报错归类："
+    case "$OUT" in
+      *MISSING_CREDENTIAL*) echo "     · 该账号的凭据没进到进程 → 用 dsh-set-key --env <keyVar> <key> 补上" ;;
+      *TRANSPORT*) echo "     · 连不上 → baseURL 写错 / 被墙 / 需要代理" ;;
+      *AUTH*|*auth*|*"API key"*) echo "     · 鉴权失败 → key 与这家服务商不匹配，或 key 无效" ;;
+      *) echo "     · 多半是模型 id 不对，换成服务商文档里的名字" ;;
+    esac
+    echo "     · 其他账号不受影响：换一个激活即可（本机所有账号都已注册）"
+    exit 1
+  fi
+  exit 0
+fi
+
+if [ -z "$MODE" ]; then show_current; exit 0; fi
+
+if [ "$MODE" = clear ]; then
+  echo "########## 1. 清除自定义后端，回到官方默认"
+  clear_patch
+  echo "########## 2. 重启服务"
+  sv restart dsh-web >/dev/null 2>&1; sleep 4
+  sv status dsh-web | sed 's/^/  /'
+  echo "  令牌: $(dsh-web-url 2>/dev/null | grep -aoE 'http://[^[:space:]]+token=[A-Za-z0-9_-]+' | tail -1)"
+  echo
+  echo "已回到 https://api.deepseek.com/anthropic（凭据没动，要清用 dsh-set-key --clear）"
+  exit 0
+fi
+
+[ -n "$URL" ] || die "缺少端点：给预置名或 --base-url"
+case "$URL" in http://*|https://*) ;; *) die "端点必须是 http(s) 开头" ;; esac
+case "$API" in
+  anthropic-messages|openai-completions) ;;
+  *) die "--api 只支持 anthropic-messages 或 openai-completions（pi-ai 还支持 openai-responses / bedrock-converse-stream 等，本工具未开放）" ;;
+esac
+[ "$API_SET" = yes ] || :   # 保留 --api 显式性；预置名已自动带上协议
+if [ "$API" = "openai-completions" ]; then
+  case "$PROV_ID" in
+    [a-z]*) ;;
+    *) die "--provider-id 必须小写字母开头（credential 记录 id 的硬规则）" ;;
+  esac
+  case "$PROV_ID" in
+    *[!a-z0-9-]*) die "--provider-id 只能用小写字母、数字、连字符" ;;
+  esac
+fi
+[ -n "$MODELS" ] || die "缺少 --model（第三方模型 id 各家不同，不猜）"
+
+IFS=',' read -r -a RAW <<< "$MODELS"
+MS=(); SEEN=$'\n'
+for m in "${RAW[@]}"; do
+  [ -n "$m" ] || die "--model 里有空项"
+  case "$SEEN" in *$'\n'"$m"$'\n'*) continue;; esac
+  SEEN="$SEEN$m"$'\n'
+  MS+=("$m")
+done
+[ "${#MS[@]}" -gt 0 ] || die "--model 解析后为空"
+
+if [ -n "$KEYVAR_USER" ]; then
+  KEYVAR="$KEYVAR_USER"
+elif [ "$API" = "openai-completions" ]; then
+  KEYVAR="DSH_GATEWAY_API_KEY"
+else
+  KEYVAR="DEEPSEEK_API_KEY"
+fi
+
+DISPLAY="${PROV_ID}"
+echo "  接法   : $API$([ "$API" = openai-completions ] && echo "（插件 llm-pi-ai，路由 id=$PROV_ID）" || echo "（插件 llm-deepseek）")"
+echo "  端点   : $URL"
+echo "  凭据   : \$$KEYVAR"
+echo "  模型   : ${MS[*]}"
+echo "  maxTok : $MAXTOK    ctx: $CTX    thinking: $THINK"
+
+echo
+echo "########## 1. 生成并写入 patch（写完立刻校验，失败自动回滚）"
+if [ "$API" = "openai-completions" ]; then
+BLOCK=$(cat <<YML
+$BG (dsh-set-provider 管理；手改会被下次覆盖)
+- id: llm-pi-ai
+  config:
+    providers:
+      $PROV_ID:
+        apiKeyEnv: $KEYVAR
+        displayName: $DISPLAY
+        api: openai-completions
+        baseURL: $URL
+        defaultContextWindow: $CTX
+        defaultMaxTokens: $MAXTOK
+        models:
+$(for m in "${MS[@]}"; do printf '          - id: %s\n            name: %s\n' "$m" "$m"; done)
+- id: agent-default-model
+  config:
+    provider: $PROV_ID
+    model: ${MS[0]}
+$ED
+YML
+)
+else
+BLOCK=$(cat <<YML
+$BG (dsh-set-provider 管理；手改会被下次覆盖)
+- id: llm-deepseek
+  config:
+    baseURL: $URL
+    thinking: $([ "$THINK" = yes ] && echo enabled || echo disabled)
+    reasoningEffort: $([ "$THINK" = yes ] && echo high || echo off)
+    maxTokens: $MAXTOK
+    models:
+$(for m in "${MS[@]}"; do printf '      - id: %s\n        name: %s\n        contextWindow: %s\n        maxTokens: %s\n' "$m" "$m" "$CTX" "$MAXTOK"; done)
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: ${MS[0]}
+$ED
+YML
+)
+fi
+for prof in $PROFILES; do write_patch "$prof" "$BLOCK"; done
+
+if [ -n "$KEY" ]; then
+  echo
+  echo "########## 2. 写 key（跳过 DeepSeek 专用校验）"
+  dsh-set-key --no-verify --no-restart --env "$KEYVAR" "$KEY" | sed 's/^/  /'
+else
+  echo
+  echo "########## 2. 没给 --key，沿用现有凭据"
+  dsh-set-key --show 2>/dev/null | sed 's/^/  /'
+fi
+
+[ "$RESTART" = yes ] || { echo "(--no-restart：到此为止)"; exit 0; }
+
+echo
+echo "########## 3. 重启服务"
+sv restart dsh-web >/dev/null 2>&1; sleep 4
+sv status dsh-web | sed 's/^/  /'
+echo "  令牌: $(dsh-web-url 2>/dev/null | grep -aoE 'http://[^[:space:]]+token=[A-Za-z0-9_-]+' | tail -1)"
+
+echo
+echo "########## 4. 端到端验证（真跑一次，不猜）"
+# headless 跑在**这个 SSH 会话**里，不继承 runit 服务的环境，
+# 所以要把服务那份凭据文件 source 进来，否则必然报 MISSING_CREDENTIAL。
+KEYS="$SVD/environment"
+if [ -f "$KEYS" ]; then set -a; . "$KEYS"; set +a; fi
+OUT=$(timeout 150 dsh headless "只回答两个字：收到" 2>&1)
+RC=$?
+printf '%s\n' "$OUT" | tail -12 | sed 's/^/  /'
+echo
+if [ $RC -eq 0 ] && ! printf '%s' "$OUT" | grep -qE "MISSING_CREDENTIAL|AUTH:|TRANSPORT|[Ee]rror"; then
+  echo "  ✅ 后端已切到 $URL（$API），取到模型回复"
+else
+  echo "  ⚠️ 没跑通。按报错归类："
+  case "$OUT" in
+    *MISSING_CREDENTIAL*) echo "     · 凭据没进到进程 → dsh-set-key --env $KEYVAR <key> 再试" ;;
+    *TRANSPORT*) echo "     · 连不上 → baseURL 写错 / 被墙 / 需要代理" ;;
+    *"cannot serve"*|*"supported protocols"*) echo "     · api 值不被这版 dsh 支持 → 用 --api 换一个" ;;
+    *"provider "*" not found"*|*UNKNOWN_PROVIDER*) echo "     · provider id 没注册上 → 检查 --provider-id 与 agent-default-model 是否一致" ;;
+    *AUTH*|*"Invalid Authentication"*|*"令牌"*|*"API key"*|*auth*) echo "     · 鉴权失败 → key 与这家服务商不匹配，或 key 无效" ;;
+    *) echo "     · 多半是模型 id 不对，用 --model 换成服务商文档里的名字" ;;
+  esac
+  echo "  查当前配置： dsh-set-provider"
+  echo "  想退回官方： dsh-set-provider --clear"
+  exit 1
+fi
