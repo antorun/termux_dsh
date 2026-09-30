@@ -67,7 +67,7 @@ Termux 里只要 `pkg install curl python`，然后一行：
     curl -fsSL https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | bash
 
 它从 GitHub raw 拉源文件、当场构建 `install-gateway.sh` 并执行 —— 落网关、起 8030、
-打印引导令牌（相当于自动完成下面 A 的第 1、2 步）。指定分支 / tag / commit：行尾加
+打印控制台地址（相当于自动完成下面 A 的第 1、2 步）。指定分支 / tag / commit：行尾加
 `bash -s <ref>`。之后照 A 的第 3、4 步在浏览器里装 dsh、走生命周期。
 
 为什么不直接下载现成安装器：`install-gateway.sh` 是生成物，按项目规矩不入版本库
@@ -89,22 +89,21 @@ python3 install/build-install-gateway.py      # → install/install-gateway.sh
 # 2) 推到设备执行（scp / adb push / 任意方式；脚本幂等，可重复跑）
 scp install/install-gateway.sh <设备>:~/
 ssh <设备> 'bash ~/install-gateway.sh'
-#    → 落 9 个工具 + 面板 + 生命周期四件套 → 起 dsh-ctl 服务 → 打印引导令牌
+#    → 落 9 个工具 + 面板 + 生命周期四件套 → 起 dsh-ctl 服务 → 打印控制台地址
 #    旧文件会被备份到 ~/dsh-termux/backups/，现有 ~/.dsh 配置原样保留
 
-# 3) 浏览器打开安装器最后打印的地址（dsh 未装时这就是入口）
-#    http://<LAN-IP>:8030/ctl?bootstrap=<引导令牌>
+# 3) 浏览器打开 http://<LAN-IP>:8030/ 就是控制台（路由器模型：不问令牌、不问登录）
 #    → 选通道（latest / next / alpha）或手填版本 →「开始安装」，进度实时滚
-#    → 装完点页面给出的令牌链接进 dsh 主界面；引导令牌登录一次后自动作废
+#    → 装完点页面给出的令牌链接进 dsh 主界面
 
 # 4) 之后的全生命周期都在控制台里：修复 / 更新 / 卸载，SSH 都不用开
 ```
 
-引导令牌存在 `$PREFIX/share/dsh-ctl/.bootstrap-token`（600），16~64 位 urlsafe；
-安装器只在结束时打印一次。它只能调白名单里的只读 + 生命周期接口（`state` / `install` /
-`repair` / `uninstall` / `jobstatus` / `dshcheck` / `dshupgrade` / `log` / `restart`），
-**改配置类的接口（`save` 等）一律 403** —— 引导令牌不是登录态，不能拿去改接口配密钥。
-dsh 装好并被登录一次后令牌自动作废，控制台改用 dsh 自己的 cookie。
+控制台是**路由器模型**：局域网内任何设备打开 8030 就是管理界面（像路由器后台一样），
+`state` / `install` / `repair` / `uninstall` / `jobstatus` / `dshcheck` / `dshupgrade` /
+`log` / `restart` 这些生命周期接口不用任何凭据。**改配置类的接口（`save` 等）一律 401** ——
+要先打开页面给的 `/app?token=…` 链接登录一次 dsh，cookie 就对网关这个地址生效；
+登录态下 `state` 才返回明文密钥，未登录只给掩码。
 
 ### B. 手工路径（不想用控制台）
 
@@ -163,7 +162,7 @@ bash tests/test-uninstall.sh          # 期望「失败 0 项」（67 项断言�
 
 # 网关 + 生命周期：假树 + 假上游 node，真跑安装 / 修复 / 卸载 job（令牌鉴权、
 # 并发拒绝、回滚、卸载 detached + 杀网关重启的 job 落盘恢复、完成态保留、登录撤销令牌）
-bash tests/test-gateway.sh            # 期望「失败 0 项」（72 项断言，约 19 秒）
+bash tests/test-gateway.sh            # 期望「失败 0 项」（65 项断言，约 20 秒）
 ```
 
 `test-panel-ui.js` 需要浏览器：装了 `playwright` 包就直接跑；只装 `playwright-core` 时用

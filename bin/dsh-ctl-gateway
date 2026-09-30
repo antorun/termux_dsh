@@ -76,7 +76,6 @@ const NPM_UPGRADE_TIMEOUT = 900000   // 15 分钟：Termux 上装 300MB 级的�
  * 安装 / 升级流程要它们在场，缺了就是网关没装全，控制台相应入口禁用。
  * uninstall.sh 随网关下发，控制台「卸载」按钮调它（apiUninstall），
  * 手工执行也走同一条路、同样的参数。 */
-const BOOTSTRAP_TOKEN = SHARE + '/.bootstrap-token'   // 安装器装 dsh 时用它调 install 接口
 const INSTALL_WEB_SERVICE_SH = SHARE + '/install-web-service.sh'
 const UNINSTALL_SH = SHARE + '/uninstall.sh'
 
@@ -1274,7 +1273,7 @@ function probeAuth(hostHeader, cookie, path) {
 
 /* ------------------------------------------------------------------ 控制台 API */
 
-async function buildState() {
+async function buildState(authed) {
   const sc = readSites()
   const creds = readCredentials()
   const ip = lanIp()
@@ -1284,9 +1283,8 @@ async function buildState() {
  return {
   ok: true,
   services: readServices(),
-   // 网关优先：dsh 没装时面板的版本行会提示「重跑安装脚本」；引导令牌处于激活期时面板要提示它的存在。
+   // 网关优先：dsh 没装时面板的版本行会提示「重跑安装脚本」
    dshMissing: !fs.existsSync(DSH_PKG_JSON),
-   bootstrapActive: fs.existsSync(BOOTSTRAP_TOKEN),
    // 卸载脚本随网关下发：在场才给「卸载」按钮（apiUninstall 的前提）
    uninstallAvailable: fs.existsSync(UNINSTALL_SH),
   dshVersion: ver,
@@ -1299,7 +1297,9 @@ async function buildState() {
     sites: sc.sites,
     active: sc.active,
     migrated: sc.migrated,
-    credentials: creds,
+    // 路由器模型：state 不登录也能取，明文 key 就不能跟着出去 —— 只给掩码；
+    // 面板列表里那一列本来就是掩码，要增改密钥得登录走 save
+    credentials: authed ? creds : creds.map((c) => ({ name: c.name, masked: c.masked })),
     presets: PRESETS,
     dshFlavor: {
       patcher: fs.existsSync(PATCHER),
@@ -1722,7 +1722,8 @@ function html(res, code, body) {
 }
 
 const CTL_API = {
-  state: async () => buildState(),
+  // 未登录（路由器模型）也能取的是 state；buildState 按登录态决定给不给明文 key
+  state: async (b, ctx) => buildState(!!(ctx && ctx.authed)),
   save: apiSave,
   manifest: apiManifest,
   apply: apiApply,
@@ -1736,74 +1737,33 @@ const CTL_API = {
  repair: apiRepair,
  uninstall: apiUninstall,
  jobstatus: apiJobStatus,
- restart: async () => {
+ restart: async (b, ctx) => {
+    const authed = !!(ctx && ctx.authed)
     const r = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
     await sleep(4000)
     const s = await runFile(BIN + '/sv', ['status', 'dsh-web'], 10000)
-    return { ok: r.code === 0, out: s.out, state: await buildState() }
+    return { ok: r.code === 0, out: s.out, state: await buildState(authed) }
   },
  log: async (b) => ({ ok: true, out: serviceLog(clean(b.name) || 'dsh-web', Number(b.lines) || 60) }),
 }
 
-/* dsh 还没装时，引导令牌持有者能用的接口子集。
- * save / apply / manifest / key 这些能改配置的一律排除：引导令牌是明文 URL 里传的，
- * 谁拿到链接谁能点 —— 可以装 / 修 / 卸（生命周期），不可以改 dsh 的后端配置。 */
-const BOOTSTRAP_WHITELIST = ['state', 'install', 'repair', 'uninstall', 'jobstatus', 'dshcheck', 'dshupgrade', 'log', 'restart']
-
-/* ------------------------------------------------------- 引导令牌
- *
- * dsh 还没装好时，控制台没有 dsh 的登录 cookie 可用 —— 这时唯一能进控制台的
- * 凭据就是这个 32 位令牌。它由 install-gateway.sh 生成（600 权限），装完 dsh
- * 并成功登录一次后自动撤销（revokeBootstrap）：明文放在 URL 里传来传去，
- * dsh 上线后就没必要再留着这个入口。
- */
-
-/** 读令牌：16~64 位 urlsafe；文件不在 / 格式不对都算没有。 */
-function readBootstrap() {
-  try {
-    const t = readText(BOOTSTRAP_TOKEN).trim()
-    return /^[A-Za-z0-9_-]{16,64}$/.test(t) ? t : ''
-  } catch { return '' }
-}
-
-/** 定长比较，不短路 —— 抗时序侧信道（一位一位比，别让攻击者靠耗时猜字符）。 */
-function bootstrapValid(given) {
-  const want = readBootstrap()
-  if (!want || !given || given.length !== want.length) return false
-  let d = 0
-  for (let i = 0; i < want.length; i++) d |= want.charCodeAt(i) ^ given.charCodeAt(i)
-  return d === 0
-}
-
-/** 请求里带的引导令牌：query 参数 > 自定义头。body 里的由 handleCtl 从 JSON 里取。 */
-function bootstrapGiven(req, url) {
-  const q = url.searchParams ? url.searchParams.get('bootstrap') : null
-  if (q) return String(q)
-  const h = req.headers['x-bootstrap-token']
-  return h ? String(h) : ''
-}
-
-/** 撤销：有 dsh 登录的浏览器进来一次就删掉，别留长期后门。 */
-function revokeBootstrap() {
-  try { fs.unlinkSync(BOOTSTRAP_TOKEN) } catch {}
-}
+/* 路由器模型：不登录也能用的接口子集。
+ * 装完网关打开 http://<lan-ip>:8030/ 就是控制台，装 / 修 / 卸 / 看状态全都直接点
+ * （像路由器管理页一样信任局域网）。但 save / apply / manifest / key 这些能改
+ * 配置、读写明文密钥的一律排除：改 dsh 后端必须登录 dsh（/app）。 */
+const OPEN_API = ['state', 'install', 'repair', 'uninstall', 'jobstatus', 'dshcheck', 'dshupgrade', 'log', 'restart']
 
 async function handleCtl(req, res, url) {
   const hostHeader = req.headers.host || ''
   const cookie = req.headers.cookie || ''
   const code = await probeAuth(hostHeader, cookie)
   const authed = code === 404
+  // 登录与否只往 ctx 里带：面板、生命周期接口对局域网全开（路由器模型）
+  const ctx = { authed }
 
   if (url.pathname === '/ctl' || url.pathname === '/ctl/') {
-    // 已登录：这个浏览器拿到了 dsh 的 cookie，引导令牌就此失效（明文 URL 传的东西别长期留）
-    if (authed) {
-      revokeBootstrap()
-      return html(res, 200, PANEL_HTML)
-    }
-    // 没登录但带着有效引导令牌（URL 里 ?bootstrap=…）：也给面板
-    if (bootstrapValid(bootstrapGiven(req, url))) return html(res, 200, PANEL_HTML)
-    // 其它情况：引导页（粘贴令牌的表单 + 去 /app 登录的入口），不打印令牌本身
-    return html(res, 200, bootstrapPage(hostHeader))
+    // 路由器模型：控制台直接伺候，不弹任何令牌表单
+    return html(res, 200, PANEL_HTML)
   }
   if (!url.pathname.startsWith('/ctl/api/')) return json(res, 404, { ok: false, out: 'not found' })
 
@@ -1818,26 +1778,21 @@ async function handleCtl(req, res, url) {
   }
 
   if (authed) {
-    // 已登录：完整权限
+    // 已登录 dsh：完整权限（含改配置 / 读明文密钥）
     try {
-      return json(res, 200, await fn(body))
+      return json(res, 200, await fn(body, ctx))
     } catch (e) {
       return json(res, 500, { ok: false, out: String((e && e.stack) || e) })
     }
   }
 
-  // 未登录：引导令牌 + 白名单，少一样都不行
-  const bs = (body && body.bootstrap ? String(body.bootstrap) : '') || bootstrapGiven(req, url)
-  if (!bootstrapValid(bs)) {
-    return json(res, 401, { ok: false, bsExp: true,
-      out: '未登录且引导令牌无效。dsh 已上线就先去 /app 登录；刚装完网关就重新执行 install-gateway.sh 拿令牌。' })
-  }
-  if (BOOTSTRAP_WHITELIST.indexOf(name) < 0) {
-    return json(res, 403, { ok: false,
-      out: '引导令牌只能用安装 / 更新 / 状态这类接口。请登录 dsh 后再动配置。' })
+  // 未登录：白名单内照常（state 的明文 key 由 buildState 按登录态掩掉）
+  if (OPEN_API.indexOf(name) < 0) {
+    return json(res, 401, { ok: false,
+      out: '改配置 / 凭据的接口需要先登录 dsh（打开 /app）。装 / 修 / 卸 / 看状态不登录也能用。' })
   }
  try {
-    return json(res, 200, await fn(body))
+    return json(res, 200, await fn(body, ctx))
   } catch (e) {
     return json(res, 500, { ok: false, out: String((e && e.stack) || e) })
   }
@@ -1964,28 +1919,6 @@ function downPage(msg) {
 <p class="muted">到手机上执行： <kbd>sv status dsh-web</kbd> → <kbd>sv restart dsh-web</kbd></p></div>`)
 }
 
- /** 没登录又没令牌时的落地页：粘贴引导令牌的表单 + 去 /app 登录的入口。令牌本身绝不往页面上打。 */
- function bootstrapPage(host) {
-   return shell('dsh 网关 · 引导', `
- <h1>dsh 网关 · ${host || '本机'}</h1>
- <div class="sub">网关的管理入口；dsh 主界面挂在 <kbd>/app</kbd>。</div>
- 
- <div class="card">
-   <h2>有引导令牌</h2>
-   <p class="muted">装网关时（install-gateway.sh）会生成一个 32 位令牌，贴进来就能进控制台：查状态、更新 dsh 版本。</p>
-   <form method="GET" action="/ctl" autocomplete="off">
-     <label for="bs">引导令牌</label>
-     <input id="bs" name="bootstrap" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="粘贴 install-gateway.sh 打印的令牌">
-     <p class="row" style="margin-top:10px"><button class="primary" type="submit">进入控制台 →</button></p>
-   </form>
- </div>
- 
- <div class="card">
-   <h2>dsh 已经装好了？</h2>
-   <p class="row"><a href="/app"><button>去 /app 用 dsh 账号登录 →</button></a></p>
-   <p class="muted">登录一次，cookie 就对网关这个地址生效，回来就是完整控制台；引导令牌同时自动作废。</p>
- </div>`)
- }
 
 /* ------------------------------------------------------------------ 启动 */
 
@@ -2017,25 +1950,14 @@ function onRequest(req, res) {
     return res.end()
   }
 
-  // 网关自己的首页 = 管理控制台
+  // 网关自己的首页 = 管理控制台（路由器模型：直接给面板，不问令牌也不问登录）
   if (p === '/' || p === '/index.html') {
     // 老链接 / 书签里的 /?token=… 仍然要能用 —— 挪到 /app 走登录
     if (url.searchParams.get('token')) {
       res.writeHead(302, { location: '/app' + url.search, 'cache-control': 'no-store' })
       return res.end()
     }
-    return probeAuth(req.headers.host || '', req.headers.cookie || '').then((code) => {
-      if (res.headersSent) return
-      // 404 = 探针路径，cookie 对这个地址有效 → 完整面板；明文令牌留在 URL 里没意义了，顺手作废
-      if (code === 404) {
-        revokeBootstrap()
-        return html(res, 200, PANEL_HTML)
-      }
-      // 没登录但带着有效引导令牌（?bootstrap=…）：面板伺候
-      if (bootstrapValid(bootstrapGiven(req, url))) return html(res, 200, PANEL_HTML)
-      // 其它：401/403（dsh 在线但没登录）或 0（dsh 还没装 / 没跑）都落到引导页
-      return html(res, 200, bootstrapPage(req.headers.host || ''))
-    })
+    return html(res, 200, PANEL_HTML)
   }
 
   // 其余（/assets /langs /fonts /api favicon manifest…）一律透明转发

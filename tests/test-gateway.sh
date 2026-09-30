@@ -16,14 +16,15 @@
 # 然后 PREFIX=$TREE HOME=$TREE/home TMPDIR=$WORK/tmp 真跑网关。
 #
 # 用例：
-#   T1 引导令牌鉴权（未登录、dsh 未装）：引导页 / 面板 / 401 / 403 / 白名单
+#   T1 开放模型鉴权（路由器模型，未登录、dsh 未装）：/ctl 直接面板 /
+#       state 不用凭据且凭据只给掩码 / save 401 / 白名单
 #   T2 安装任务：jobId → 轮询 → done / appUrl / 并发拒绝
 #   T3 修复幂等：不重装包（npm 调用数不变）
-#   T4 登录后撤销引导令牌（404 一次 → 令牌文件没了）—— 刻意在卸载之前：
-#       卸载会把令牌文件连带删掉，放后面就分不清「是谁删的」
+#   T4 登录后完整权限：state 给明文凭据 / save 放行 / /app 回上游页面
 #   T5 卸载：detached 子进程真拆假树；杀掉网关再重启 → job 落盘恢复
 #       （PID 还活着就续盯 / 退出码已落就结案）
 #   T6 完成态落盘保留：再重启一次 jobstatus 仍在 / log 白名单 / restart 放行
+#       （白名单接口不登录也能调 —— 路由器模型）
 #
 # 跑法：bash tests/test-gateway.sh（从仓库根目录）
 set -u
@@ -53,10 +54,10 @@ sec() { printf '\n########## %s ##########\n' "$1"; }
 GW_PORT=18079
 UP_PORT=18078
 BASE="http://127.0.0.1:$GW_PORT"
-# 28 位 urlsafe，落在网关认的 16~64 位区间里
-TOK='GwTestBootstrapToken000123456'
 FAKE_IP='192.168.3.5'
 INSTALL_VER='9.9.9'
+# 种进 environment 的假密钥：T1 验「未登录只见掩码」、T4 验「登录后见明文」
+TEST_KEY='sk-fake-secret-1234567890'
 
 WORK=$(mktemp -d) || exit 2
 GW_PID=''
@@ -106,7 +107,6 @@ build_tree() {
   cp "$ROOT/install/build-flock.sh" "$STUB/share/dsh-ctl/build-flock.sh"
   cp "$ROOT/install/uninstall.sh" "$STUB/share/dsh-ctl/uninstall.sh"
   cp "$ROOT/install/install-web-service.sh" "$STUB/share/dsh-ctl/install-web-service.sh"
-  printf '%s' "$TOK" >"$STUB/share/dsh-ctl/.bootstrap-token"
 
   # 桩脚本统一把调用记进树外的 calls 文件，便于断言"谁被调了几次"
   : >"$WORK/calls"
@@ -210,21 +210,28 @@ STUB_IFC
   done
 }
 
-postBs() { # postBs <api> <json> → 带引导令牌头 POST，输出 body
+post() { # post <api> <json> → POST，不带任何凭据（路由器模型：白名单接口就这么调）
   curl -s -m 20 -X POST -H 'content-type: application/json' \
-    -H "x-bootstrap-token: $TOK" -d "$2" "$BASE/ctl/api/$1"
-}
-postBsCode() { # postBsCode <api> <json> → 只输出状态码
-  curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST \
-    -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" \
     -d "$2" "$BASE/ctl/api/$1"
 }
+postCode() { # postCode <api> <json> → 只输出状态码
+  curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST \
+    -H 'content-type: application/json' -d "$2" "$BASE/ctl/api/$1"
+}
 postCk() { # postCk <api> <json> → 已登录 cookie POST，输出 body
-  # 卸载（T5）会把 share/dsh-ctl 连令牌文件一起删掉 —— 卸载之后只能走登录态
   curl -s -m 20 -X POST -H 'content-type: application/json' \
     -H "$COOKIE" -d "$2" "$BASE/ctl/api/$1"
 }
-POLLER=postBs   # 轮询用的请求器：T5 之后引导令牌没了，换成 postCk
+POLLER=post
+
+# 假密钥（dsh-web 的 environment 文件，网关 readCredentials 的读源）：只在
+# T1 / T4 用到时临时种进去，验完就拆 —— 这个目录在位的话 ensureWebService
+# 会跳过 install-web-service.sh（那是 T2 要断言的核心路径）
+plant_key() {
+  mkdir -p "$STUB/var/service/dsh-web"
+  printf 'export TEST_API_KEY=%s\n' "'$TEST_KEY'" >"$STUB/var/service/dsh-web/environment"
+}
+unplant_key() { rm -rf "$STUB/var/service/dsh-web"; }
 pollJob() { # pollJob <超时秒> → JOB 变量；返回 0=done 1=failed/超时
   local i
   JOB=''
@@ -284,60 +291,45 @@ if [ "$GW_READY" != 1 ]; then
 fi
 
 # ================================================================== T1
-sec "T1. 引导令牌鉴权（未登录、dsh 未装）"
+sec "T1. 开放模型鉴权（路由器模型：不登录、dsh 未装）"
+# 路由器模型：局域网内打开就是控制台，没有任何令牌 / 表单
 BODY=$(curl -s -m 8 "$BASE/ctl")
-check "/ctl 无令牌状态码" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl")" 200
-has "引导页有贴令牌表单" "$BODY" 'name="bootstrap"'
-nohas "引导页不给面板" "$BODY" 'id="wizard"'
+check "/ctl 状态码" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl")" 200
+has "/ctl 直接给面板（向导卡）" "$BODY" 'id="wizard"'
+nohas "/ctl 不弹令牌表单" "$BODY" 'name="bootstrap"'
 
-BODY=$(curl -s -m 8 "$BASE/ctl?bootstrap=WRONGTOKEN")
-check "错令牌状态码" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl?bootstrap=WRONGTOKEN")" 200
-nohas "错令牌不给面板" "$BODY" 'id="wizard"'
-
-BODY=$(curl -s -m 8 "$BASE/ctl?bootstrap=$TOK")
-check "对令牌状态码" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl?bootstrap=$TOK")" 200
-has "对令牌给面板（向导卡）" "$BODY" 'id="wizard"'
-
-check "/ 无令牌" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/")" 200
-has "/ 无令牌给引导页" "$(curl -s -m 8 "$BASE/")" 'name="bootstrap"'
-check "/?bootstrap=给面板" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/?bootstrap=$TOK")" 200
-has "/?bootstrap=给面板" "$(curl -s -m 8 "$BASE/?bootstrap=$TOK")" 'id="wizard"'
+check "/ 状态码" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/")" 200
+has "/ 也是面板" "$(curl -s -m 8 "$BASE/")" 'id="wizard"'
 
 check "/app 未登录" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/app")" 200
 has "/app 未登录给登录页" "$(curl -s -m 8 "$BASE/app")" '登录'
 
-check "未知 api 404" "$(postBsCode nosuchapi '{}')" 404
+check "未知 api 404" "$(postCode nosuchapi '{}')" 404
 
-check "state 无令牌 401" \
-  "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{}' "$BASE/ctl/api/state")" 401
-check "state 错令牌 401" \
-  "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H 'x-bootstrap-token: WRONG' -d '{}' "$BASE/ctl/api/state")" 401
-check "save 引导令牌不可改配置 403" "$(postBsCode save '{}')" 403
+check "save 没登录不能改配置 401" "$(postCode save '{}')" 401
 
-BODY=$(postBs state '{}')
-has "state ok:true" "$BODY" '"ok":true'
+plant_key
+BODY=$(post state '{}')
+has "state 不用凭据 ok:true" "$BODY" '"ok":true'
 has "state dshMissing" "$BODY" '"dshMissing":true'
-has "state bootstrapActive" "$BODY" '"bootstrapActive":true'
 has "state uninstallAvailable" "$BODY" '"uninstallAvailable":true'
+has "state 凭给掩码" "$BODY" '"masked"'
+nohas "state 明文 key 不外露" "$BODY" "\"value\":\"$TEST_KEY\""
+unplant_key
 
-# 已登录浏览器才知道的 cookie；T4 起用它模拟登录态（revoke / 卸载后的请求都走它）
+# 已登录浏览器才知道的 cookie；T4 起用它模拟登录态
 COOKIE='cookie: session=loggedin-user'
-
-# body 里带 bootstrap 也算
-BODY=$(curl -s -m 8 -X POST -H 'content-type: application/json' \
-  -d "{\"bootstrap\":\"$TOK\"}" "$BASE/ctl/api/state")
-has "body 里的引导令牌也认" "$BODY" '"ok":true'
 
 # ================================================================== T2
 sec "T2. 安装任务（jobId → 轮询 → 完成；并发拒绝）"
 NPM_BEFORE=$(grep '^npm install' "$WORK/calls" 2>/dev/null | wc -l | tr -d '[:space:]')
-RES=$(postBs install "{\"version\":\"$INSTALL_VER\"}")
+RES=$(post install "{\"version\":\"$INSTALL_VER\"}")
 has "install 立即返回 ok:true" "$RES" '"ok":true'
 has "install 返回 jobId" "$RES" '"jobId"'
 has "install job 快照 running" "$RES" '"status":"running"'
 
 # npm 桩 sleep 3 秒：第二个任务必须被拒绝
-RES2=$(postBs install "{\"version\":\"$INSTALL_VER\"}")
+RES2=$(post install "{\"version\":\"$INSTALL_VER\"}")
 has "并发 install 被拒绝" "$RES2" '"ok":false'
 has "并发拒绝说明在跑哪个" "$RES2" '另一个任务正在跑'
 
@@ -367,7 +359,7 @@ NPM_AFTER=$(grep '^npm install' "$WORK/calls" 2>/dev/null | wc -l | tr -d '[:spa
 check "安装只装一次包" "$NPM_AFTER" $((NPM_BEFORE + 1))
 
 # 装完再问 state：dshMissing 翻转
-BODY=$(postBs state '{}')
+BODY=$(post state '{}')
 has "装完 state dshMissing:false" "$BODY" '"dshMissing":false'
 has "装完 state 有版本" "$BODY" "\"dshVersion\":\"$INSTALL_VER\""
 has "装完有 dshUrl" "$BODY" 'token='
@@ -375,7 +367,7 @@ has "装完有 dshUrl" "$BODY" 'token='
 # ================================================================== T3
 sec "T3. 修复幂等（不换包，只重打补丁 + 起服务）"
 NPM_BEFORE=$(grep '^npm install' "$WORK/calls" 2>/dev/null | wc -l | tr -d '[:space:]')
-RES=$(postBs repair '{}')
+RES=$(post repair '{}')
 has "repair 立即返回 ok:true" "$RES" '"ok":true'
 has "repair 返回 jobId" "$RES" '"jobId"'
 if pollJob 90; then
@@ -386,32 +378,38 @@ else
 fi
 NPM_AFTER=$(grep '^npm install' "$WORK/calls" 2>/dev/null | wc -l | tr -d '[:space:]')
 check "修复不重装包（npm 调用数不变）" "$NPM_AFTER" "$NPM_BEFORE"
-BODY=$(postBs state '{}')
+BODY=$(post state '{}')
 has "修复后版本不变" "$BODY" "\"dshVersion\":\"$INSTALL_VER\""
 
 # ================================================================== T4
-sec "T4. 登录一次后撤销引导令牌"
-# 刻意放在卸载之前：卸载会把 share/dsh-ctl（令牌文件所在）一并删掉，
-# 先验「登录撤销」，后面令牌没了就是卸载干的，两边不会互相掩盖。
-printf 'authed' >"$WORK/mode"
-BODY=$(curl -s -m 8 -H "$COOKIE" "$BASE/ctl")   # dsh 已"登录"：这一下就作废令牌
+sec "T4. 登录后完整权限（明文凭据 / save 放行 / 上游被代理）"
+printf 'authed' >"$WORK/mode"   # 假上游从现在起认 cookie
 check "/ctl 已登录 200" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -H "$COOKIE" "$BASE/ctl")" 200
-has "已登录直接给面板" "$BODY" 'id="wizard"'
-if [ -f "$STUB/share/dsh-ctl/.bootstrap-token" ]; then
-  bad "登录后引导令牌文件仍在（没撤销）"
-else
-  ok "登录后引导令牌已撤销"
-fi
-check "撤销后 state 带旧令牌 401" "$(postBsCode state '{}')" 401
+has "已登录给面板" "$(curl -s -m 8 -H "$COOKIE" "$BASE/ctl")" 'id="wizard"'
+
+plant_key   # 掩码断言的对照组：同一把 key，登录后应该给明文
+BODY=$(postCk state '{}')
+has "登录后 state ok:true" "$BODY" '"ok":true'
+has "登录后凭据给明文" "$BODY" "\"value\":\"$TEST_KEY\""
+unplant_key
 has "/app 已登录回上游页面" "$(curl -s -m 8 -H "$COOKIE" "$BASE/app")" 'UPSTREAM-APP-HTML'
-BODY=$(curl -s -m 8 -H "$COOKIE" "$BASE/")
-has "/ 已登录给面板" "$BODY" 'id="wizard"'
+
+# save 不再是 401：登录态放行（桩树上保存成不成功无所谓，只看不再被拒）
+SC=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+  -H "$COOKIE" -d '{}' "$BASE/ctl/api/save")
+if [ "$SC" = "401" ]; then
+  bad "登录后 save 仍被 401 拒了"
+else
+  ok "登录后 save 不再 401（HTTP $SC）"
+fi
+
+# 白名单接口对未登录仍然开放：登录不该把路走窄了
+check "state 不带 cookie 依旧 200" "$(postCode state '{}')" 200
 
 # ================================================================== T5
 sec "T5. 卸载（detached 子进程 + 杀网关再重启的落盘恢复）"
-# 令牌上一步已撤销、且卸载会删 share/dsh-ctl —— 从这里起一律走登录态
-POLLER=postCk
-RES=$(postCk uninstall '{}')
+# 不带凭据调卸载：路由器模型下生命周期接口本来就开放
+RES=$(post uninstall '{}')
 has "uninstall 立即返回 ok:true" "$RES" '"ok":true'
 has "uninstall 返回 jobId" "$RES" '"jobId"'
 has "uninstall 提示后台跑" "$RES" '后台'
@@ -441,19 +439,16 @@ else
 fi
 
 # ================================================================== T6
-sec "T6. 完成态落盘保留（再重启一次仍在）+ 白名单接口"
+sec "T6. 完成态落盘保留（再重启一次仍在）+ 白名单接口不用凭据"
 # 已结束的 job 写在盘上：再重启一次网关，jobstatus 照样回得出最后一个任务
 restart_gw
 sleep 1
-BODY=$(postCk jobstatus '{}')
+BODY=$(post jobstatus '{}')
 has "jobstatus 保留完成现场" "$BODY" '"status":"done"'
 has "最后任务是 uninstall" "$BODY" '"kind":"uninstall"'
-BODY=$(curl -s -m 8 -X POST -H 'content-type: application/json' -H "$COOKIE" \
-  -d '{"name":"dsh-web","lines":5}' "$BASE/ctl/api/log")
-has "log 在白名单里" "$BODY" '"ok":true'
-check "restart 也放行（sv 桩无条件 ok）" \
-  "$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
-    -H "$COOKIE" -d '{}' "$BASE/ctl/api/restart")" 200
+BODY=$(post log '{"name":"dsh-web","lines":5}')
+has "log 不用凭据（白名单）" "$BODY" '"ok":true'
+check "restart 不用凭据（sv 桩无条件 ok）" "$(postCode restart '{}')" 200
 
 # ==================================================================
 sec "结果"

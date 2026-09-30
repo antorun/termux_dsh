@@ -182,7 +182,7 @@ th{color:var(--dim);font-weight:500;font-size:12px}
       <div><label>&nbsp;</label>
         <button class="primary" id="wGo" onclick="doInstall()">开始安装</button></div>
     </div>
-    <p class="hint">装完弹窗里会给令牌登录链接，点开直接进 dsh 主界面；引导令牌登录一次后自动作废。选 alpha 通道时远端可能比本机旧 —— 那是回退路，不是更新。</p>
+    <p class="hint">装完弹窗里会给令牌登录链接，点开直接进 dsh 主界面。选 alpha 通道时远端可能比本机旧 —— 那是回退路，不是更新。</p>
   </div>
 
   <div class="card">
@@ -387,25 +387,7 @@ var MKEY = { sid:'', tid:'' };                        // 密钥弹窗正在编�
 var RETEST_MS = 20000;
 var HL_MAX_TRY = 3;                                   // 429/503 时最多试几次（含首次）
 
-/* 引导令牌：dsh 还没装 / 没登录时，从 URL ?bootstrap=… 进来。
- * 存 sessionStorage（刷新不丢、关标签页即焚）；请求一律走自定义头，不往 URL 里反复带。 */
-(function(){
-  try {
-    var m = /[?&]bootstrap=([A-Za-z0-9_-]{16,64})/.exec(location.search);
-    if (m) {
-      sessionStorage.setItem('dsh-bs', m[1]);
-      history.replaceState(null, '', location.pathname);
-    }
-  } catch (e) {}
-})();
-function bsToken(){ try { return sessionStorage.getItem('dsh-bs') || ''; } catch (e) { return ''; } }
-function bsClear(){ try { sessionStorage.removeItem('dsh-bs'); } catch (e) {} }
-function bsHeaders(){
-  var h = { 'content-type': 'application/json' };
-  var t = bsToken();
-  if (t) h['x-bootstrap-token'] = t;
-  return h;
-}
+function apiHeaders(){ return { 'content-type': 'application/json' }; }
 
 function out(t){
   var node = document.getElementById('out');
@@ -428,17 +410,11 @@ function esc(s){
 function api(name, body, quiet){
   if (!quiet) busy(true, name);
   return fetch('/ctl/api/' + name, {
-    method:'POST', headers: bsHeaders(), body: JSON.stringify(body || {})
+    method:'POST', headers: apiHeaders(), body: JSON.stringify(body || {})
   }).then(function(r){
     if (r.status === 401) {
-      // 带着引导令牌却 401 = 令牌失效或已被撤销（dsh 装好并被登录一次后自动作废）
-      if (bsToken()) {
-        bsClear();
-        return { ok:false, bsExp:true,
-          out:'引导令牌已失效（dsh 装好并登录一次后会自动作废）。要继续装 / 修 dsh，重新执行 install-gateway.sh 拿新令牌。' };
-      }
-      location.href = '/ctl';
-      throw new Error('未登录');
+      // 白名单外的接口（save 等改配置类）需要登录 dsh
+      return { ok:false, out:'这个接口需要先登录 dsh：打开 /app 登录一次，cookie 就对这个地址生效。' };
     }
     return r.json().catch(function(){ return {ok:false, out:'HTTP ' + r.status}; });
   }).then(function(j){ if (!quiet) busy(false); return j; })
@@ -1698,7 +1674,6 @@ function openJobModal(title, hint, fn, opts){
   document.getElementById('jmodal').style.display = 'flex';
 
   fn().then(function(j){
-    if (j.bsExp) { jobModalAbort(j.out || '引导令牌已失效'); return; }
     if (!j.ok && !j.jobId) { jobModalAbort(j.out || '任务没起来'); return; }
     JT.running = true;
     pollJob();
@@ -1724,7 +1699,6 @@ function pollJob(){
   if (!JT.running) return;
   api('jobstatus', {}, true).then(function(j){
     if (!JT.running) return;
-    if (j.bsExp) { jobModalAbort(j.out || '引导令牌已失效'); return; }
     if (j.ok && j.job) {
       JT.misses = 0;
       renderJob(j.job);

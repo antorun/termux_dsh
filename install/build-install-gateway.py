@@ -5,7 +5,8 @@
 生成的 install-gateway.sh 是单文件、可直接 bash 执行、幂等 —— 在设备上跑一次就把
 网关、面板、runit 服务、生命周期四件套（patches.py / build-flock.sh /
 uninstall.sh / install-web-service.sh）全落好。dsh 本体不在这里装，装完网关后去
-浏览器控制台贴引导令牌，由控制台走 install / repair / upgrade / uninstall。
+浏览器控制台（http://<lan-ip>:8030/ 打开即是，路由器模型）走 install / repair /
+upgrade / uninstall。
 
 改完任一 payload 后重跑本脚本重建：
 

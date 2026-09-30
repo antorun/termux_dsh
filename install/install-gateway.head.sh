@@ -3,15 +3,16 @@
 # 幂等，可重复执行。一键装全套：网关 + 控制台 + dsh 本体（最新版），
 # 最后把 dsh 的登录链接直接打到屏幕上。
 #
-# 做六件事：
+# 做五件事：
 #   1. 落网关全套：bin/ 下 9 个工具 + share/dsh-ctl/ 下控制台与生命周期脚本
 #      （patches.py、build-flock.sh、uninstall.sh、install-web-service.sh）
 #   2. 建 / 复位 runit 服务 dsh-ctl：<lan-ip>:8030 -> 127.0.0.1:3080
-#   3. 引导令牌：沿用现有的，或缺了就生成 32 位（600 权限，只随安装器打印一次）
-#   4. 启动 dsh-ctl，等出 run:
-#   5. 用令牌验证：拿得到面板、API 放行、错令牌 401、非白名单接口 403
-#   6. 装 dsh 本体（已装则跳过）：POST 网关 install 接口，终端实时滚进度，
+#   3. 启动 dsh-ctl，等出 run:
+#   4. 验证：打开就是面板、API 无凭据放行、明文密钥不外露、改配置接口 401
+#   5. 装 dsh 本体（已装则跳过）：POST 网关 install 接口，终端实时滚进度，
 #      装完打印登录链接（http://<lan-ip>:8030/app?token=…）
+#
+# 控制台是路由器模型：http://<lan-ip>:8030/ 打开就是，不问令牌。
 #
 # 装哪个版本（环境变量，可选）：
 #   DSH_CHANNEL=latest|next|alpha   通道，默认 latest
@@ -120,7 +121,7 @@ echo "    控制台页面 $(wc -c <"$PANEL") 字节"
 printf '    面板含更新弹窗(#umodal)    %s\n' "$(grep -c 'id="umodal"' "$PANEL")"
 printf '    面板含任务弹窗(#jmodal)    %s\n' "$(grep -c 'id="jmodal"' "$PANEL")"
 printf '    面板含轮询(pollJob)        %s\n' "$(grep -c 'function pollJob' "$PANEL")"
-printf '    面板含引导令牌处理(bsToken) %s\n' "$(grep -c 'function bsToken' "$PANEL")"
+printf '    面板无令牌残留(bsToken)    %s\n' "$(grep -c 'function bsToken' "$PANEL")"
 
 step "2. dsh-ctl 服务"
 HAD_SVC=0
@@ -142,27 +143,7 @@ rm -f "$SVDIR/dsh-ctl/down"
 ls -la "$SVDIR/dsh-ctl" | sed 's/^/  /'
 command -v sv-enable >/dev/null 2>&1 && { sv-enable dsh-ctl >/dev/null 2>&1 && echo "  sv-enable dsh-ctl OK"; }
 
-step "3. 引导令牌"
-# 16~64 位 urlsafe 才会被网关认；格式不对就跟没有一样，重新生成。
-TOK=""
-if [ -f "$PREFIX/share/dsh-ctl/.bootstrap-token" ]; then
-  TOK=$(tr -d ' \n\r' <"$PREFIX/share/dsh-ctl/.bootstrap-token" 2>/dev/null || true)
-fi
-if [ -n "$TOK" ] && [ "${#TOK}" -ge 16 ] && [ "${#TOK}" -le 64 ] \
-   && printf '%s' "$TOK" | grep -qE '^[A-Za-z0-9_-]+$'; then
-  chmod 600 "$PREFIX/share/dsh-ctl/.bootstrap-token"
-  echo "  沿用现有引导令牌（chmod 600）"
-else
-  TOK=$(head -c 32 /dev/urandom | base64 | tr -d '/+=\n' | cut -c1-32)
-  umask 077
-  printf '%s' "$TOK" >"$PREFIX/share/dsh-ctl/.bootstrap-token"
-  umask 022
-  chmod 600 "$PREFIX/share/dsh-ctl/.bootstrap-token"
-  echo "  生成新令牌（32 位，600）"
-fi
-echo "  令牌只在安装结束时打印一次；dsh 装好并被登录一次后自动作废。"
-
-step "4. 启动 dsh-ctl"
+step "3. 启动 dsh-ctl"
 if [ "$HAD_SVC" = 1 ]; then
   sv restart dsh-ctl || echo "  ! sv restart 失败"
 else
@@ -179,7 +160,7 @@ sv status dsh-ctl 2>/dev/null | sed 's/^/  /'
 [ "$UP" = 1 ] || { echo "  ✗ dsh-ctl 没起来，看日志：tail -50 $PREFIX/var/log/sv/dsh-ctl/current"; exit 1; }
 tail -6 "$PREFIX/var/log/sv/dsh-ctl/current" 2>/dev/null | sed 's/^/  /'
 
-step "5. 验证"
+step "4. 验证"
 IP=$("$PREFIX/bin/dsh-lan-ip" 2>/dev/null || true)
 if [ -z "$IP" ]; then
   echo "  ! 取不到局域网 IP（dsh-lan-ip）—— WiFi 没连时网关会一直重试绑定，等 30 秒看它出来没："
@@ -191,12 +172,12 @@ if [ -z "$IP" ]; then
   done
 fi
 if [ -z "$IP" ]; then
-  echo "  ✗ 局域网 IP 始终取不到 —— 网关在跑（IP 一有就自动绑上），但第 6 步装不了 dsh。"
-  echo "    连上 WiFi / 局域网后重跑本脚本：前 5 步秒过，第 6 步自动把 dsh 装上。"
+  echo "  ✗ 局域网 IP 始终取不到 —— 网关在跑（IP 一有就自动绑上），但第 5 步装不了 dsh。"
+  echo "    连上 WiFi / 局域网后重跑本脚本：前 4 步秒过，第 5 步自动把 dsh 装上。"
   echo
   echo "=================================================================="
-  echo "  控制台地址（IP 有了把 <手机IP> 换掉）：http://<手机IP>:$GW_PORT/ctl?bootstrap=$TOK"
-  echo "  令牌：$TOK"
+  echo "  控制台地址（IP 有了把 <手机IP> 换掉）：http://<手机IP>:$GW_PORT/"
+  echo "  打开就是控制台，不用输任何令牌。"
   echo "=================================================================="
   exit 0
 fi
@@ -213,18 +194,16 @@ if [ "$HAVE_CURL" = 1 ]; then
     sleep 1
   done
 
-  printf '  /ctl 无令牌           : %s  （期望 200：引导页，贴令牌的表单）\n' \
+  printf '  /ctl 打开就是面板       : %s  （期望 200：控制台面板，不问令牌）\n' \
     "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl")"
-  printf '  /ctl?bootstrap=<对的> : %s  （期望 200：控制台面板）\n' \
-    "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl?bootstrap=$TOK")"
   printf '  面板含更新弹窗 #umodal  : %s  （期望 ≥1）\n' \
-    "$(curl -s -m 8 "$BASE/ctl?bootstrap=$TOK" | grep -c 'id="umodal"')"
-  printf '  state 带令牌头        : %s  （期望 ok:true）\n' \
-    "$(curl -s -m 8 -X POST -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" -d '{}' "$BASE/ctl/api/state" | grep -o '"ok":true' | head -1)"
-  printf '  state 带错令牌头      : %s  （期望 401）\n' \
-    "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H 'x-bootstrap-token: WRONGTOKEN0123456789' -d '{}' "$BASE/ctl/api/state")"
-  printf '  非白名单接口 save     : %s  （期望 403：引导令牌不能改配置）\n' \
-    "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" -d '{}' "$BASE/ctl/api/save")"
+    "$(curl -s -m 8 "$BASE/ctl" | grep -c 'id="umodal"')"
+  printf '  state 不用任何凭据      : %s  （期望 ok:true）\n' \
+    "$(curl -s -m 8 -X POST -H 'content-type: application/json' -d '{}' "$BASE/ctl/api/state" | grep -o '"ok":true' | head -1)"
+  printf '  state 凭据只给掩码     : %s  （期望 0：明文 key 不外露）\n' \
+    "$(curl -s -m 8 -X POST -H 'content-type: application/json' -d '{}' "$BASE/ctl/api/state" | grep -c '"value":"[^"]*')" || true
+  printf '  改配置接口 save 需登录 : %s  （期望 401）\n' \
+    "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{}' "$BASE/ctl/api/save")"
   echo
   echo "-- 日志尾部 --"
   tail -4 "$PREFIX/var/log/sv/dsh-ctl/current" 2>/dev/null | sed 's/^/  /'
@@ -232,7 +211,7 @@ else
   echo "  ! 没 curl，自检跳过（pkg install curl 后重跑可看），直接装 dsh。"
 fi
 
-step "6. 装 dsh 本体"
+step "5. 装 dsh 本体"
 DSH_PKG_JSON="$PREFIX/lib/node_modules/@deepseek-ai/dsh/package.json"
 DSH_CHANNEL="${DSH_CHANNEL:-latest}"
 case "$DSH_CHANNEL" in latest|next|alpha) ;;
@@ -244,7 +223,7 @@ if [ -f "$DSH_PKG_JSON" ]; then
   echo "  dsh 已装（$("$PREFIX/bin/dsh" --version 2>/dev/null || echo 版本未知)）—— 不动它，升级走控制台「更新」。"
   # 顺手从 state 接口掏登录链接；没 curl 就空着，banner 走回退文案。
   if [ "$HAVE_CURL" = 1 ]; then
-    APPURL=$(curl -s -m 8 -X POST -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" -d '{}' \
+    APPURL=$(curl -s -m 8 -X POST -H 'content-type: application/json' -d '{}' \
       "$BASE/ctl/api/state" \
       | grep -o '"dshUrl":"[^"]*"' | head -1 | sed 's/^"dshUrl":"//; s/"$//')
   fi
@@ -252,8 +231,8 @@ else
   echo "  走网关 install 接口装 dsh（通道 $DSH_CHANNEL${DSH_VERSION:+，手填版本 $DSH_VERSION}）。npm 要几分钟，输出实时滚："
   cat >"$TMPDIR/dsh-install-poll.js" <<'POLL_EOF'
 #!/usr/bin/env node
-// 由 install-gateway.sh 第 6 步写进 $TMPDIR：拿引导令牌调网关 install 接口装
-// dsh，轮询 jobstatus 把进度逐行打到终端；装完把登录链接写进结果文件（最后
+// 由 install-gateway.sh 第 5 步写进 $TMPDIR：调网关 install 接口装 dsh，
+// 轮询 jobstatus 把进度逐行打到终端；装完把登录链接写进结果文件（最后
 // 一个参数）。退出码 0 = 装好，1 = 没装成（原因打在最后一行）。
 // 只用 require('http')，不指望 node 18 才有的全局 fetch。
 'use strict'
@@ -261,10 +240,9 @@ const http = require('http')
 const fs = require('fs')
 
 const base = process.argv[2] || ''
-const tok = process.argv[3] || ''
-const channel = process.argv[4] || 'latest'
-const version = process.argv[5] || ''
-const resultFile = process.argv[6] || ''
+const channel = process.argv[3] || 'latest'
+const version = process.argv[4] || ''
+const resultFile = process.argv[5] || ''
 
 const START_DEADLINE_MS = 60000      // 网关刚 restart / 端口没到，给 60 秒
 const POLL_MS = 2000
@@ -299,7 +277,6 @@ function post(path, bodyObj, timeoutMs, cb) {
       headers: {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(body),
-        'x-bootstrap-token': tok,
       },
       timeout: timeoutMs || 30000,
     }, (res) => {
@@ -387,16 +364,15 @@ startInstall()
 POLL_EOF
   node --check "$TMPDIR/dsh-install-poll.js" \
     || { echo "  ✗ 轮询脚本没过语法检查（$TMPDIR/dsh-install-poll.js）"; exit 1; }
-  node "$TMPDIR/dsh-install-poll.js" "$BASE" "$TOK" "$DSH_CHANNEL" "$DSH_VERSION" "$TMPDIR/dsh-install.result"
+  node "$TMPDIR/dsh-install-poll.js" "$BASE" "$DSH_CHANNEL" "$DSH_VERSION" "$TMPDIR/dsh-install.result"
   if [ "$?" != 0 ]; then
     echo
     echo "======================================================================"
     echo "  ✗ dsh 没装成 —— 网关已经在跑，随时能再试："
-    echo "    重跑本脚本（前 5 步秒过）：bash install-gateway.sh"
-    echo "    或在控制台手动装：http://$IP:$GW_PORT/ctl?bootstrap=$TOK"
+    echo "    重跑本脚本（前 4 步秒过）：bash install-gateway.sh"
+    echo "    或在控制台手动装：http://$IP:$GW_PORT/ctl"
     echo "    网关日志：tail -50 $PREFIX/var/log/sv/dsh-ctl/current"
     echo "======================================================================"
-    echo "  令牌：$TOK"
     exit 1
   fi
   APPURL=$(tr -d '\n\r' <"$TMPDIR/dsh-install.result" 2>/dev/null || true)
@@ -412,17 +388,14 @@ if [ -n "$APPURL" ]; then
 else
   echo "  ① dsh 登录链接：打开下面的控制台，首页就有。"
 fi
-echo "  ② 控制台（dsh 登录一次后自动转完整模式）："
-echo "      http://$IP:$GW_PORT/ctl?bootstrap=$TOK"
+echo "  ② 控制台（查状态 / 更新 / 卸载，局域网内打开即用）："
+echo "      http://$IP:$GW_PORT/"
 echo "======================================================================"
-echo "  令牌：$TOK"
-echo "  令牌只打印这一次（存在 $PREFIX/share/dsh-ctl/.bootstrap-token，600）。"
-echo "  再看一眼：cat $PREFIX/share/dsh-ctl/.bootstrap-token"
 echo "  今后只剩两件事："
 echo "    更新 dsh → 控制台「更新」（选通道 / 版本，可强制重装）"
 echo "    卸载     → bash $PREFIX/share/dsh-ctl/uninstall.sh -y"
 echo "              （-n 先预演；--all 连 dsh 包 / 用户数据一起拆）"
-echo "  dsh 装好并登录一次后令牌自动作废 —— 那时候控制台改用 dsh 自己的 cookie。"
+echo "  改 dsh 后端配置 / 密钥要先登录 dsh（打开 ① 那个链接）。"
 echo "======================================================================"
 echo
 echo "完成。"

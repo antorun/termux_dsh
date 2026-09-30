@@ -302,13 +302,13 @@ node -e 'require("'"$PREFIX"'/lib/node_modules/@deepseek-ai/dsh/node_modules/@de
 # 三个服务
 sv status dsh-web dsh-lan dsh-ctl
 
-# 当前入口（含令牌）
+# 当前入口（dsh 的登录令牌链接）
 dsh-web-url --all
 
 # 8030 三态
-curl -s -o /dev/null -w '%{http_code}\n' http://192.168.3.190:8030/       # 200 控制台 / 落地页
+curl -s -o /dev/null -w '%{http_code}\n' http://192.168.3.190:8030/       # 200 控制台面板（路由器模型：直接进）
 curl -s -o /dev/null -w '%{http_code}\n' http://192.168.3.190:8030/app    # 200 dsh 主界面
-curl -s -o /dev/null -w '%{http_code}\n' http://192.168.3.190:8030/ctl    # 401 未登录
+curl -s -o /dev/null -w '%{http_code}\n' http://192.168.3.190:8030/ctl    # 200 同面板；save 等改配置接口才 401
 ```
 
 ## 八、8030 控制台面板改版记录（2026-09-30）
@@ -830,23 +830,22 @@ dsh 本体的装 / 修 / 升 / 卸全部挪到浏览器控制台里完成。哪�
 | 0 | 备份：`$PREFIX/bin/` 下 8 个工具、`panel.html`、`~/.dsh/{sites,accounts}.json`、两个 profile 的 `cordis.patch.yml` 全 `cp -a` 到 `~/dsh-termux/backups/` | dsh 已装就原地更新网关，不动 dsh |
 | 1 | 落网关全套：9 个工具 + 面板 + 生命周期四件套（`patches.py` / `build-flock.sh` / `uninstall.sh` / `install-web-service.sh`），逐件 `node --check` / `bash -n` / `ast.parse` 自检 | 自检失败即停 |
 | 2 | 建 / 复位 runit 服务 `dsh-ctl`：<lan-ip>:8030 → 127.0.0.1:3080 | 服务目录已存在就复位 run 脚本 |
-| 3 | 引导令牌：沿用现有的，或缺了就生成 32 位（权限 600） | 格式不合（非 16~64 位 urlsafe）就跟没有一样，重新生成 |
-| 4 | 启动：`sv restart`（已有服务）/ `sv up`（新建），最多等 25 秒出 `run:` | 起不来退出 1 并指向日志 |
-| 5 | 五项验证：`/ctl` 200 引导页、`?bootstrap=<对令牌>` 200 面板含向导、`state` 带头 `ok:true`、错令牌 401、非白名单接口 `save` 403 | 没 curl / 没拿到 LAN IP 就跳过验证，令牌照常有效 |
+| 3 | 启动：`sv restart`（已有服务）/ `sv up`（新建），最多等 25 秒出 `run:` | 起不来退出 1 并指向日志 |
+| 4 | 五项验证：`/ctl` 200 直接面板含向导、`state` 无凭据 `ok:true`、明文 key 计数 0、非白名单接口 `save` 401 | 没 curl / 没拿到 LAN IP 就跳过验证 |
 
-### 引导令牌（bootstrap token）
+> 安装器原来是 6 步：第 3 步「生成引导令牌」已随第十三节的路由器模型一起去掉。
 
-dsh 没装时控制台还没有 dsh 的登录 cookie 可用，唯一凭据就是这个令牌：
+### 鉴权：路由器模型（第十三节改的，原来叫引导令牌）
 
-- 16~64 位 urlsafe，存 `$PREFIX/share/dsh-ctl/.bootstrap-token`（600），安装器只在结束时打印一次
-- 请求里三种带法：URL `?bootstrap=…` > 自定义头 `x-bootstrap-token` > body 里的 `bootstrap` 字段
-- 白名单 `BOOTSTRAP_WHITELIST = ['state','install','repair','uninstall','jobstatus','dshcheck','dshupgrade','log','restart']`
-  —— 只读 + 生命周期；`save` / `apply` / `manifest` / `key` 这些能改后端配置的一律 403。
-  引导令牌是明文 URL 里传的，谁拿到链接谁能点 —— **可以装东西，不可以改配置**
-- `bootstrapValid` 定长比较不短路（逐位异或、全程不提前 return），抗时序侧信道
-- **dsh 上线并被登录一次后自动撤销**（`revokeBootstrap` 删文件）：明文 URL 传的东西，dsh 有自己
-  的 cookie 后就没必要再留这个入口。已撤销再访问 → 401 带 `bsExp:true`
-- `/ctl` 三态：已登录 → 面板（顺手撤销令牌）；未登录但令牌有效 → 面板；其余 → 引导页（贴令牌表单 + 去 `/app` 登录的入口，不打印令牌本身）
+老设计里 dsh 没装时唯一凭据是安装器生成的一个 32 位令牌；现在控制台对局域网
+全开（`install-gateway.head.sh` 的步骤表也同步精简）。现状：
+
+- 白名单 `OPEN_API = ['state','install','repair','uninstall','jobstatus','dshcheck','dshupgrade','log','restart']`
+  —— 生命周期接口不登录也能调；`save` / `apply` / `manifest` / `key` 这些能改
+  后端配置的一律 401，要先去 `/app` 登录 dsh
+- `state` 的 `credentials` 按登录态给：未登录只有掩码（`buildState(authed)`），
+  明文 API key 不外露
+- `/ctl` 与 `/` 一律返回面板；登录态只决定接口权限与明文密钥
 
 ### 长任务：job 契约
 
@@ -937,15 +936,15 @@ API>=30 两个条件，少一条 `statx` 就只剩类型没有函数，clang 报
 
 | 组 | 内容 |
 |---|---|
-| T1 鉴权 | 引导页 200 / 带对令牌 200 面板 / 错令牌 401 / 非白名单 403 / 白名单内放行 |
+| T1 鉴权 | `/ctl` 与 `/` 直接 200 面板且**无令牌表单** / state 无凭据 `ok:true` 且只给掩码 / save 401 |
 | T2 安装 job | jobId 返回 / 拒绝并发第二个任务 / npm 调用参数正确 / steps 与 lines 结构 / 完成态 |
 | T3 修复幂等 | 不走 npm（数调用次数）/ 重打补丁成功 |
-| T4 登录撤销令牌 | 拿 dsh 登录 cookie 访问一次后，引导令牌失效。**特意排在卸载之前**：卸载会把
- `share/dsh-ctl`（令牌文件的家）一起删掉，先撤销再删，「令牌是怎么没的」归属才清楚 |
-| T5 卸载 + 落盘恢复 | API 立即返回 jobId / **杀网关再重启，轮询照样取到 done**（job 落盘 + detached
- 恢复）/ 后台真把假树拆了 / 调用串含 `-y --dsh` 且脚本来自 TMPDIR 副本 |
-| T6 完成态保留 | 再重启一次 jobstatus 仍返回最后任务快照（`"kind":"uninstall"`）/ 登录态
- `log`、`restart` 白名单放行 |
+| T4 登录后完整权限 | 同一把假 key：未登录只见掩码、登录后见明文（对照组）/ save 登录后不再 401 /
+ `/app` 代理回上游页面 / state 不带 cookie 依旧 200 |
+| T5 卸载 + 落盘恢复 | API 立即返回 jobId（**不带凭据**）/ **杀网关再重启，轮询照样取到 done**（job 落盘 +
+ detached 恢复）/ 后台真把假树拆了 / 调用串含 `-y --dsh` 且脚本来自 TMPDIR 副本 |
+| T6 完成态保留 | 再重启一次 jobstatus 仍返回最后任务快照（`"kind":"uninstall"`）/
+ `log`、`restart` **不用凭据**白名单放行 |
 
 写这套测试时踩的三个坑（都是「桩脚本」本身的）：
 
@@ -1074,7 +1073,8 @@ detached 子进程靠 `spawn(..., { detached: true, stdio: ['ignore', logFd, log
 
 - `tests/test-gateway.sh` **72 / 72 全过**（Android 15 aarch64 / node v24.18.0 /
   bash 5.3），含 T5 的完整往返：卸载 → 杀网关 → 重启 → 轮询到 done → 断言假树
-  真被拆、调用串含 `-y --dsh`、脚本来自 `dsh-uninstall-*` 副本
+  真被拆、调用串含 `-y --dsh`、脚本来自 `dsh-uninstall-*` 副本（T1 / T4 后来
+  按第十三节重写，套件现为 65 项）
 - `tests/test-uninstall.sh` 67 / 67；`tests/audit-panel.js` 全绿（95 函数 / 47 id）
 - Windows（git bash）上 T1 全绿、HTTP 层与任务编排的语法都正常，但 node 无法 spawn
   无扩展名的脚本桩 —— 假树里的 `npm` / `sv` / … 在 Windows 上不是可执行文件，
@@ -1087,3 +1087,57 @@ detached 子进程靠 `spawn(..., { detached: true, stdio: ['ignore', logFd, log
 带 `/bin` 挂载的设备（本机）没问题；纯 Termux 无 `/bin/sh` 时这两处会抛异常被
 各自 catch（`lanIp` 落空、服务 `raw` 记一条报错），面板降级但网关不挂。要彻底
 干净得换 `execFileSync` 直跑 `BIN + '/sv'`，属既有行为，本轮不动。
+
+## 十三、去掉引导令牌：控制台改「路由器模型」（2026-09-30）
+
+装完网关打开 `http://<LAN-IP>:8030/` **就是**控制台 —— 这是用户要的体感，
+代价是引导令牌那整套机器没有存在意义了。拆掉的东西：
+
+- `readBootstrap` / `bootstrapValid` / `bootstrapGiven` / `revokeBootstrap` /
+  `bootstrapPage`（粘贴令牌的落地页）全部删除；`$PREFIX/share/dsh-ctl/.bootstrap-token`
+  不再生成，安装器第 3 步整个去掉（5 步 → 头部说明同步改）
+- `handleCtl`：`/ctl` 与 `/` 一律返回面板；未登录鉴权从「令牌 + 白名单」
+  简化为「白名单」。`BOOTSTRAP_WHITELIST` 改名 `OPEN_API`，语义从「令牌持有者
+  的子集」变成「局域网内任何人的子集」
+
+### 边界：明文密钥（这是令牌唯一真正挡住的东西）
+
+`state` 的 `credentials` 数组里 `value` 是**明文 API key**（`save` 回显、登录态
+面板要用）。放开 `state` 就等于把 key 摊给整个局域网 —— 所以 `buildState(authed)`
+按登录态给：未登录只有 `{name, masked}`，登录后（dsh cookie）才给全文。
+`restart` 的内嵌 state 同样透传登录态。`save` 依旧 401 拒绝未登录。
+
+放开的是什么：`state` / `install` / `repair` / `uninstall` / `jobstatus` /
+`dshcheck` / `dshupgrade` / `log` / `restart` —— 生命周期接口对局域网全开，
+**路由器管理页模型**：同一个 WiFi 下能打开 8030 的人就能修 / 卸。破坏性操作
+的拦截留在面板的 confirm（卸载还有 `-y` / `--all` 双确认），改配置 / 读密钥
+则必须登录 dsh。这是用户明确选的档位。
+
+### 面板与安装器
+
+- 删掉 `bsToken` / `bsClear` / `bsHeaders` 三件套与 `?bootstrap=` URL 解析；
+  `api()` 的 401 分支改成「这个接口需要先登录 dsh（打开 /app）」
+- `apiState` 的 `bootstrapActive` 字段去掉，面板相应提示删除
+- `install-gateway.head.sh` 的验证项改写：`/ctl` 直接 200 面板、state 无凭据
+  `ok:true`、明文 key 计数 = 0、save 无凭据 401；收尾只打印控制台地址与
+  dsh 登录链接，不再有令牌两行
+
+### 测试（T1 / T4 重写，T5 / T6 去掉令牌路径）
+
+- T1「开放模型鉴权」：`/ctl` 与 `/` 直接给面板且**没有** `name="bootstrap"`
+  表单；state 无凭据 `ok:true` 且只有掩码；save 无凭据 401
+- T4「登录后完整权限」：同一把假 key —— 未登录只见掩码、登录后见明文
+  （对照组）；save 登录后不再 401；`/app` 代理回上游页面；state 不带 cookie
+  依旧 200（登录不把白名单的路走窄）
+- T5 卸载改不带凭据调用；T6 的 `log` / `restart` 也去掉 cookie ——
+  白名单接口不登录能调，正是这轮改的点
+- 假密钥（`environment` 里一把 `TEST_API_KEY`）只在断言时 `plant_key` 进
+  假树、验完 `unplant_key` 拆掉：`var/service/dsh-web` 目录在位会让
+  `ensureWebService` 跳过 `install-web-service.sh`（T2 要断言的核心路径），
+  不能常驻
+
+真机 `tests/test-gateway.sh` **65 / 65 全过**（T1 14 项 + T2 21 项 + T3 6 项 +
+T4 7 项 + T5 9 项 + T6 4 项 + 结果 4 行计 65 个 check）；安装器在 Android 15 /
+node v24.18 上一遍过，自带的自检五项（面板 200 / umodal 在场 / state 无凭据
+ok / 明文 key 计数 0 / save 401）全绿。旧设备上残留的 `.bootstrap-token`
+文件已手动删除（新代码不读它，留着也只是死文件）。
