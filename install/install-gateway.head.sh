@@ -173,10 +173,12 @@ if [ -z "$IP" ]; then
 fi
 if [ -z "$IP" ]; then
   echo "  ✗ 局域网 IP 始终取不到 —— 网关在跑（IP 一有就自动绑上），但第 5 步装不了 dsh。"
+  echo "    本机直连照常可用：http://127.0.0.1:$GW_PORT/"
   echo "    连上 WiFi / 局域网后重跑本脚本：前 4 步秒过，第 5 步自动把 dsh 装上。"
   echo
   echo "=================================================================="
   echo "  控制台地址（IP 有了把 <手机IP> 换掉）：http://<手机IP>:$GW_PORT/"
+  echo "  本机访问：http://127.0.0.1:$GW_PORT/"
   echo "  打开就是控制台，不用输任何令牌。"
   echo "=================================================================="
   exit 0
@@ -198,6 +200,8 @@ if [ "$HAVE_CURL" = 1 ]; then
     "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl")"
   printf '  面板含更新弹窗 #umodal  : %s  （期望 ≥1）\n' \
     "$(curl -s -m 8 "$BASE/ctl" | grep -c 'id="umodal"')"
+  printf '  本机直连 127.0.0.1      : %s  （期望 200：不绕局域网也能进）\n' \
+    "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$GW_PORT/ctl")"
   printf '  state 不用任何凭据      : %s  （期望 ok:true）\n' \
     "$(curl -s -m 8 -X POST -H 'content-type: application/json' -d '{}' "$BASE/ctl/api/state" | grep -o '"ok":true' | head -1)"
   printf '  state 凭据只给掩码     : %s  （期望 0：明文 key 不外露）\n' \

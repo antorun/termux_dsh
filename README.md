@@ -106,7 +106,12 @@ ssh <设备> 'bash ~/install-gateway.sh'
 
 `/app`（dsh 主界面）同样不用贴令牌链接：浏览器没 cookie 时网关自取 dsh 的登录
 令牌补上（302 → dsh 按 authority 种 cookie → 落回干净的 `/app`），有 cookie
-就直接取首页。
+就直接取首页。手机本机直接开 `http://127.0.0.1:8030/` 也行 —— 网关在局域网
+IP 与 loopback 上各有一个监听（WiFi 没连都能用）。
+
+> **dsh-lan 不用装**：它是无网关方案的局域网入口（`<lan-ip>:3080` 裸转发
+> + 注入 `--trusted-host`）。网关方案里这两件事 8030 与 `install-web-service.sh`
+> 已经做了，控制台服务卡里 `dsh-lan: 未安装` 是正常状态。
 
 ### B. 手工路径（不想用控制台）
 

@@ -29,6 +29,7 @@
  * 不额外引入第二套口令。
  *
  * 用法: dsh-ctl-gateway <listenHost|auto> <listenPort> <upstreamHost> <upstreamPort>
+ *       listenHost=auto 时同时绑两个：LAN IP（随 WiFi 变重绑）+ 127.0.0.1
  */
 'use strict'
 
@@ -2040,11 +2041,43 @@ function bind() {
   server = s
 }
 
+/* auto 模式另起一个 loopback 监听：手机本机 127.0.0.1:8030 直连，不用绕局域网。
+ * 两条路并存：局域网那台等 IP、重绑随 WiFi 变；loopback 永远在，WiFi 没连
+ * 也能用。显式 LISTEN_HOST 模式（测试用）只有一个监听，不重复绑。 */
+let loopServer = null
+function bindLoopback() {
+  if (LISTEN_HOST !== 'auto') return
+  if (loopServer && loopServer.listening) return
+  if (loopServer) { try { loopServer.close() } catch {} }
+  const s = http.createServer(onRequest)
+  s.on('upgrade', onUpgrade)
+  s.on('error', (err) => {
+    console.error('dsh-ctl-gateway: 监听 127.0.0.1:' + LISTEN_PORT + ' 失败：' + err.message + '；' + RETRY_MS / 1000 + ' 秒后重试')
+    setTimeout(bindLoopback, RETRY_MS)
+  })
+  s.listen(LISTEN_PORT, '127.0.0.1', () => {
+    console.log('dsh-ctl-gateway: http://127.0.0.1:' + LISTEN_PORT + '/  (本机直连) -> ' + UP_HOST + ':' + UP_PORT)
+    probeAuth('127.0.0.1:' + LISTEN_PORT, '').then((code) => {
+      if (code === 401) {
+        console.log('  ✓ /api 围栏放行 127.0.0.1:' + LISTEN_PORT + '（401 = 等登录）')
+      } else if (code === 403) {
+        console.log('  ✗ /api 围栏拒绝了 127.0.0.1:' + LISTEN_PORT + ' —— loopback 本该放行')
+      } else if (code === 404) {
+        console.log('  ! 探针路径被当成已存在路由处理了（404 当成"已登录"会误判）')
+      } else {
+        console.log('  ! 探针没结果（code=' + code + '）：dsh-web 可能还没起来')
+      }
+    })
+  })
+  loopServer = s
+}
+
 // 启动第一件事：把上次留在盘上的任务对上账 —— 已结束的留作 jobstatus 回看现场，
 // 运行中的 detached 卸载接着盯（并发护栏因此跨重启有效）
 reconcileJob()
 
 bind()
+bindLoopback()
 
 setInterval(() => {
   if (LISTEN_HOST !== 'auto') return
