@@ -931,23 +931,31 @@ API>=30 两个条件，少一条 `statx` 就只剩类型没有函数，clang 报
 
 ### 测试
 
-`tests/test-gateway.sh`：Mac 上造假树（假 `$PREFIX` + 假 `$HOME` + `sv` / `npm` / `ifconfig`
-桩脚本 + 假上游 node），把网关真跑起来，70 项断言：
+`tests/test-gateway.sh`：造假树（假 `$PREFIX` + 假 `$HOME` + `sv` / `npm` / `ifconfig`
+桩脚本 + 假上游 node），把网关真跑起来，72 项断言。Mac / Linux / Termux 都能跑（真机
+实测：Android 15 / node 24.18 / bash 5.3）：
 
 | 组 | 内容 |
 |---|---|
 | T1 鉴权 | 引导页 200 / 带对令牌 200 面板 / 错令牌 401 / 非白名单 403 / 白名单内放行 |
 | T2 安装 job | jobId 返回 / 拒绝并发第二个任务 / npm 调用参数正确 / steps 与 lines 结构 / 完成态 |
 | T3 修复幂等 | 不走 npm（数调用次数）/ 重打补丁成功 |
-| T4 卸载 detached | API 立刻返回 / 后台真把假树拆了 / 日志推进现场 |
-| T5 完成态保留 | jobstatus 在任务结束后仍返回最后任务快照（非 null） |
-| T6 登录撤销令牌 | 拿 dsh 登录 cookie 访问一次后，引导令牌失效（curl 要带 `-H "cookie: session=…"`） |
+| T4 登录撤销令牌 | 拿 dsh 登录 cookie 访问一次后，引导令牌失效。**特意排在卸载之前**：卸载会把
+ `share/dsh-ctl`（令牌文件的家）一起删掉，先撤销再删，「令牌是怎么没的」归属才清楚 |
+| T5 卸载 + 落盘恢复 | API 立即返回 jobId / **杀网关再重启，轮询照样取到 done**（job 落盘 + detached
+ 恢复）/ 后台真把假树拆了 / 调用串含 `-y --dsh` 且脚本来自 TMPDIR 副本 |
+| T6 完成态保留 | 再重启一次 jobstatus 仍返回最后任务快照（`"kind":"uninstall"`）/ 登录态
+ `log`、`restart` 白名单放行 |
 
 写这套测试时踩的三个坑（都是「桩脚本」本身的）：
 
-- 桩脚本的 shebang 必须写**绝对路径** `#!/bin/bash`。写 `#!/usr/bin/env bash` 时 `CHILD_ENV`
-  把假树 bin 排在 PATH 最前，`env bash` 会递归找到桩自身 → 参数列表无限增长 →
-  `E2BIG: Argument list too long`
+- 桩脚本的 shebang 必须写**绝对路径**。写 `#!/usr/bin/env bash` 时 `CHILD_ENV` 把假树 bin
+  排在 PATH 最前，`env bash` 会递归找到桩自身 → 参数列表无限增长。Mac 上表现是
+  `E2BIG: Argument list too long`；**Termux 上更阴**（`/bin/bash` 不存在、`/usr/bin/env`
+  存在）：execve 循环不报错，每个被调桩留一个 83% CPU 空转的孤儿进程，网关的 state /
+  jobstatus 请求全被拖死，的表现像「网关挂了」其实是被桩转死了。解法：测试里
+  `REAL_BASH=$(command -v bash)`，桩里写 `#!@BASH@` 占位符，建树时 `sed` 成绝对路径；
+  桩里 `exec bash …` 同理换成 `exec "$REAL_BASH" …`（PATH 里的 `bash` 就是桩自己）
 - `ifconfig` 桩必须 `echo` 出文本。裸把数据行写给 bash 执行（exit 127）→ `lanIp()` 落空 →
   拼出的 `appUrl` 是空串，下游断言全灭
 - 数 npm 调用次数别写 `grep -c … || echo 0`：grep 没匹配时输出 `"0\n0"`，拼成字符串喂给
@@ -985,5 +993,97 @@ API>=30 两个条件，少一条 `statx` 就只剩类型没有函数，clang 报
 顺带修了一个线上事故的尾巴：16:00 控制台点的「卸载」是 detached 跑的（删 300MB
 的 dsh 包很慢），与 16:04 的 repair 重建发生竞争 —— 重建好的 `dsh-web` 服务被慢吞吞
 的卸载又删了一遍，导致 8030 的 `/app` 一度 502。 detached 卸载结束后重跑
-`install-web-service.sh` 即恢复。这是 job/卸载纯内存态的同一类脆弱性（见下一步：
-job 落盘）。
+`install-web-service.sh` 即恢复。这是 job/卸载纯内存态的同一类脆弱性 —— 已由
+「**job 落盘 + 重启对账**」解掉，见第十二节。
+
+---
+
+## 十二、job 落盘与生命周期实现（2026-09-30 落地）
+
+第十节写的是设计（`repair` / `uninstall` 端点、卸载 detached 跑、`#wizard` 安装卡），
+这一节写的是**真正落到代码里的那部分**，外加从线上事故（第十一节尾巴）反推出的
+「job 必须比网关活得更长」。
+
+### run.sh：detached 的退出码要落码
+
+detached 子进程靠 `spawn(..., { detached: true, stdio: ['ignore', logFd, logFd] })`
+起，stdin 关掉、stdout/stderr 全追加进 `$TMPDIR/dsh-uninstall.log`。但「进程退出了」
+这件事网关未必收得到（`sv down dsh-ctl` 把网关杀了，`child.on('exit')` 就没了），
+所以复制的 `run.sh` 自己兜底：
+
+    SCRIPT="$1"; MARK="$2"; shift 2
+    bash "$SCRIPT" "$@"
+    echo $? >"$MARK"
+
+退出码写进 `dsh-uninstall-*/exit.code`，谁活着谁读取 —— 网关活着走 exit 事件，
+网关被杀过走落码文件。**脚本串里不拼任何用户输入**（沿用 `install.sh` 的约定），
+`-y --dsh` / `-y --all` 是固定 argv，由 `apiUninstall` 生成。
+
+### persistJob / reconcileJob：job 的生死不跟网关绑定
+
+- `persistJob(force)`：把 `{id, kind, title, status, steps, lines, startedAt, elapsedS,
+  pid, detach}` 原子写进 `$TMPDIR/dsh-ctl-job.json`（tmp 文件 + rename，300ms 去抖；
+  启动 / 起新 job 时 force 立刻写）。catch-all 吞掉所有写失败 —— 落盘是保命手段，
+  不能反过来把请求打挂
+- `jobLine()` / `jobStep()`：每次推进现场都顺手落盘（去抖），面板轮询断在半路，
+  重连拿到的也是连贯现场
+- 启动时 `reconcileJob()`（在 `bind()` 之前）：文件不在 / 字段不齐（kind / startedAt /
+  lines / steps 有一个不是数组）就当没有，故意严格 —— 手改的脏文件不能把网关带沟里
+  - `done` / `failed` → 原样挂回，面板继续看得到最后现场
+  - `running` + 有 `detach` → `resumeDetached()` 对账
+  - `running` 无 `detach` → 中断为 failed，说明写「子进程可能仍在后台跑完」——
+    这种 job 的子进程不在 job 文件的管辖范围内，只能把现场交给用户
+
+**并发闸门跨重启生效**：恢复出来的 `running` job 会挡住新生命周期任务
+（「另一个任务正在跑」）—— 这就是 16:00 卸载 / 16:04 repair 竞争的根除：重启
+（或被杀重启）之后，网关仍然知道「卸载还在跑」，repair 不会插队。
+
+### resumeDetached 的三段判定
+
+    readExitMark(job.detach.mark)  → 码在 = 子进程已退，直接收尸
+    pidAlive(job.pid)              → 码不在、PID 活着 = 还在跑，挂 supervise 接着等
+    都不是                          → 都不是 = 没any痕迹，中断现场
+
+`superviseDetached` 每秒查三件事：退出码文件、PID 活不活、日志有没有新行
+（`tailInto` 靠字节偏移 `detach.pushed` + 半行缓冲 `detach.buf` 推进，避免反复
+`tail -n 40` 把旧行重复推进去），外加 `NPM_UPGRADE_TIMEOUT` 封顶看门狗。
+`finishDetached()` 收尾时把日志尾部塞进 `result.out` —— 用户看到的「卸载干了什么」
+是 detached 进程自己写的，不是网关脑补的。
+
+### repair：install 已有链条的复用
+
+`runPatchChain(job)`（patches.py → LAN 补丁 → flock 插件，lan-patch 与 flock 的失败
+记为非致命）和 `ensureWebService(job)`（`sv` 缺服务目录就 `install-web-service.sh` 建、
+`restart` ×8、`waitUp` 等它活）从安装流程里抽出来共用 —— install 和 repair 走的是
+**同一条补丁链**，区别只在「要不要重装 npm 包」。repair 刻意不挪包：包没换就不
+冒 npm 的险，只重打补丁 + 起服务。`BOOTSTRAP_WHITELIST` 相应加上 `repair` /
+`uninstall`（与 README 记录的生命周期端点对齐），`buildState()` 加
+`uninstallAvailable`（`share/dsh-ctl/uninstall.sh` 在场才给卸载按钮）。
+
+### 面板配套
+
+- `#wizard` 安装卡：dsh 未装时显示（通道 latest / next / alpha 或手填版本），点位
+  在头部之后、服务卡之前；`st.dshMissing` 管显隐
+- 服务卡新增「修复（重打补丁）」「卸载」按钮 + `unAll` 勾选（`--all` 的确认文案
+  会变）；卸载的任务弹窗用 `missMs: 180000` + 专用 `missHint` —— 轮询取不到任务
+  状态 180 秒就当作「网关自己就是被删的对象」，按完成展示而不是报错
+- `pollJob` 的 miss 超时分支：`ok = !!JT.missHint` —— 给了提示语就走「乐观完成」，
+  没给才是真超时
+
+### 真机验证
+
+- `tests/test-gateway.sh` **72 / 72 全过**（Android 15 aarch64 / node v24.18.0 /
+  bash 5.3），含 T5 的完整往返：卸载 → 杀网关 → 重启 → 轮询到 done → 断言假树
+  真被拆、调用串含 `-y --dsh`、脚本来自 `dsh-uninstall-*` 副本
+- `tests/test-uninstall.sh` 67 / 67；`tests/audit-panel.js` 全绿（95 函数 / 47 id）
+- Windows（git bash）上 T1 全绿、HTTP 层与任务编排的语法都正常，但 node 无法 spawn
+  无扩展名的脚本桩 —— 假树里的 `npm` / `sv` / … 在 Windows 上不是可执行文件，
+  job 类断言必然失败。仓库的开发机约定是 Mac / Linux / Termux，Windows 只做
+  语法与面板结构审查
+
+### 一个已知的边界
+
+`lanIp()` 与服务状态读走 `execSync('… 2>&1')`，node 在 Linux 上硬编码用 `/bin/sh`。
+带 `/bin` 挂载的设备（本机）没问题；纯 Termux 无 `/bin/sh` 时这两处会抛异常被
+各自 catch（`lanIp` 落空、服务 `raw` 记一条报错），面板降级但网关不挂。要彻底
+干净得换 `execFileSync` 直跑 `BIN + '/sv'`，属既有行为，本轮不动。

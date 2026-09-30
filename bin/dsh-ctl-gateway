@@ -74,9 +74,18 @@ const NPM_UPGRADE_TIMEOUT = 900000   // 15 分钟：Termux 上装 300MB 级的�
 
 /* 网关自己下发的设备端脚本（由 install-gateway.sh 落到 share/dsh-ctl/）。
  * 安装 / 升级流程要它们在场，缺了就是网关没装全，控制台相应入口禁用。
- * uninstall.sh 也随网关下发，但它只作为独立脚本手工执行 —— 控制台里没有卸载入口。 */
+ * uninstall.sh 随网关下发，控制台「卸载」按钮调它（apiUninstall），
+ * 手工执行也走同一条路、同样的参数。 */
 const BOOTSTRAP_TOKEN = SHARE + '/.bootstrap-token'   // 安装器装 dsh 时用它调 install 接口
 const INSTALL_WEB_SERVICE_SH = SHARE + '/install-web-service.sh'
+const UNINSTALL_SH = SHARE + '/uninstall.sh'
+
+/* job 落盘（见下方「任务运行器」）：任务现场写进 TMPDIR 的一个 JSON 文件，
+ * 网关被重启 / 被杀后，新进程启动时把上次的任务对上账（恢复回看现场、
+ * 继续盯 detached 的卸载子进程、或标记中断）。TMPDIR 在 Termux 上是
+ * $PREFIX/tmp，重启不丢；卸载删的是 share/dsh-ctl，不删这里。
+ * 卸载日志 / 退出码落码同理 —— detached 子进程写，网关读。 */
+const JOB_FILE = TMPDIR + '/dsh-ctl-job.json'
 
 const CHILD_ENV = Object.assign({}, process.env, {
   PREFIX,
@@ -605,67 +614,24 @@ async function provisionDsh(job, want) {
     }
   }
 
-  // 3) 重打 JS 补丁 —— 补丁器自己的退出码就是判据（0 全成 / 1 有补丁没打成 / 2 环境问题）
-  const pr = await runStream(job, BIN + '/python3', [PATCHER], { timeoutMs: 180000 })
-  if (pr.code !== 0) {
+  // 3) 补丁链（patches.py → LAN 设置补丁 → flock 原生插件）
+  const pc = await runPatchChain(job)
+  if (pc.patchFailed) {
     return {
       ok: false,
-      out: '补丁没全打好（patches.py 退出码 ' + pr.code + '）。上游可能改了被补丁的那几个文件。\n' +
+      out: '补丁没全打好（patches.py 退出码 ' + pc.code + '）。上游可能改了被补丁的那几个文件。\n' +
         '装坏的包还在（补丁只打了一半），需要手动处理，或跑卸载脚本（uninstall.sh）清掉再来。',
       from: before, to: want, state: await buildState(),
     }
   }
 
-  // 4) 局域网设置补丁（非致命：它只是让 LAN 下「设置」页可用，不成服务也能跑）
-  const lr = await runStream(job, BIN + '/dsh-patch-lan-settings', [], { timeoutMs: 60000 })
-  if (lr.code !== 0) {
-    jobLine(job, '⚠ dsh-patch-lan-settings 没成（非致命，继续）：' +
-      String(lr.out || '').trim().split('\n')[0])
+  // 4) 起 dsh-web 服务（服务目录在就 restart，不在就建出来再 up）
+  const svcErr = await ensureWebService(job)
+  if (svcErr) {
+    return Object.assign({}, svcErr, { from: before, to: want, state: await buildState() })
   }
 
-  // 5) flock 原生插件：npm 重装会把它冲掉，缺了就现编
-  if (!flockNativeOk() && fs.existsSync(FLOCK_BUILD)) {
-    await runStream(job, BIN + '/bash', [FLOCK_BUILD], { timeoutMs: 600000 })
-  }
-
-  // 6) 起服务：dsh-web 的 runit 目录在位就 restart，不在就跑 install-web-service.sh 建出来
-  const svcExisted = fs.existsSync(SVD)
-  if (!svcExisted) {
-    const ir = await runStream(job, BIN + '/bash', [INSTALL_WEB_SERVICE_SH], { timeoutMs: 300000 })
-    if (ir.code !== 0) {
-      return {
-        ok: false,
-        out: '建 dsh-web 服务目录失败（install-web-service.sh 退出码 ' + ir.code + '）。',
-        from: before, to: want, state: await buildState(),
-      }
-    }
-  }
-  const act = svcExisted ? 'restart' : 'up'
-  let up = false
-  for (let i = 0; i < 8 && !up; i++) {
-    if (i) await sleep(2500)
-    await runStream(job, BIN + '/sv', [act, 'dsh-web'], { timeoutMs: 30000 })
-    await sleep(2500)
-    const sr = await runStream(job, BIN + '/sv', ['status', 'dsh-web'], { timeoutMs: 10000 })
-    up = /^run:/.test(String(sr.out || '').trim())
-    if (!up) jobLine(job, '⚠ sv ' + act + ' dsh-web 后还不是 run:，重试 ' + (i + 1) + '/8')
-  }
-  if (!up) {
-    return {
-      ok: false,
-      out: '服务起不来（sv status 不是 run:）。补丁已打，dsh-web 需要手动排查：看 $PREFIX/var/log/sv/dsh-web/current。',
-      from: before, to: want, state: await buildState(),
-    }
-  }
-  if (!(await waitUp(UP_HOST, UP_PORT, 120000))) {
-    return {
-      ok: false,
-      out: 'sv 显示 run: 但端口 ' + UP_PORT + ' 不应答。服务可能还在启动，等一会儿用「更新」里的强制重装。',
-      from: before, to: want, state: await buildState(),
-    }
-  }
-
-  // 7) 取令牌 + 版本，拼出可直接点的登录链接
+  // 5) 取令牌 + 版本，拼出可直接点的登录链接
   let tokenUrl = ''
   for (let i = 0; i < 10 && !tokenUrl; i++) {
     if (i) await sleep(2000)
@@ -683,6 +649,66 @@ async function provisionDsh(job, want) {
       (appUrl ? '\n登录链接（点开就直接进 dsh 主界面）：' + appUrl : ''),
     from: before, to: want, state: await buildState(), appUrl,
   }
+}
+
+/**
+ * 补丁链：patches.py → LAN 设置补丁 → flock 原生插件。
+ * install / repair / upgrade 三条生命周期的共用中段 —— 装完包（或包本来就在）
+ * 之后干的事完全一样：补丁打回去、LAN 那条小补丁补上、flock 插件缺了现编。
+ *
+ * 返回 {patchFailed, code}：patches.py 的退出码就是判据
+ * （0 全成 / 1 有补丁没打成 / 2 环境问题）。后两步一律非致命。
+ */
+async function runPatchChain(job) {
+  const pr = await runStream(job, BIN + '/python3', [PATCHER], { timeoutMs: 180000 })
+  if (pr.code !== 0) return { patchFailed: true, code: pr.code }
+
+  // 局域网设置补丁：只让 LAN 下「设置」页可用，不成服务也能跑
+  const lr = await runStream(job, BIN + '/dsh-patch-lan-settings', [], { timeoutMs: 60000 })
+  if (lr.code !== 0) {
+    jobLine(job, '⚠ dsh-patch-lan-settings 没成（非致命，继续）：' +
+      String(lr.out || '').trim().split('\n')[0])
+  }
+
+  // flock 原生插件：npm 重装会把它冲掉，缺了就现编
+  if (!flockNativeOk() && fs.existsSync(FLOCK_BUILD)) {
+    await runStream(job, BIN + '/bash', [FLOCK_BUILD], { timeoutMs: 600000 })
+  }
+  return { patchFailed: false }
+}
+
+/**
+ * 起 dsh-web 服务：runit 目录在位就 restart，不在就跑 install-web-service.sh 建出来再 up。
+ * install / repair / upgrade 共用。sv 动作后不是立刻 run: 是常态（runsv 要拉进程），
+ * 所以重试 8 轮、每轮间隔 2.5 秒；run: 之后还要端口真的应答才算起来。
+ *
+ * @returns {null | {ok:false, out:string}} null = 服务已起来；否则 = 失败定妆照（调用方补 state）
+ */
+async function ensureWebService(job) {
+  const svcExisted = fs.existsSync(SVD)
+  if (!svcExisted) {
+    const ir = await runStream(job, BIN + '/bash', [INSTALL_WEB_SERVICE_SH], { timeoutMs: 300000 })
+    if (ir.code !== 0) {
+      return { ok: false, out: '建 dsh-web 服务目录失败（install-web-service.sh 退出码 ' + ir.code + '）。' }
+    }
+  }
+  const act = svcExisted ? 'restart' : 'up'
+  let up = false
+  for (let i = 0; i < 8 && !up; i++) {
+    if (i) await sleep(2500)
+    await runStream(job, BIN + '/sv', [act, 'dsh-web'], { timeoutMs: 30000 })
+    await sleep(2500)
+    const sr = await runStream(job, BIN + '/sv', ['status', 'dsh-web'], { timeoutMs: 10000 })
+    up = /^run:/.test(String(sr.out || '').trim())
+    if (!up) jobLine(job, '⚠ sv ' + act + ' dsh-web 后还不是 run:，重试 ' + (i + 1) + '/8')
+  }
+  if (!up) {
+    return { ok: false, out: '服务起不来（sv status 不是 run:）。补丁已打，dsh-web 需要手动排查：看 $PREFIX/var/log/sv/dsh-web/current。' }
+  }
+  if (!(await waitUp(UP_HOST, UP_PORT, 120000))) {
+    return { ok: false, out: 'sv 显示 run: 但端口 ' + UP_PORT + ' 不应答。服务可能还在启动，等一会儿再试。' }
+  }
+  return null
 }
 
 /**
@@ -765,6 +791,135 @@ async function apiInstall(body) {
     (job) => provisionDsh(job, want))
 }
 
+/**
+ * 修复 dsh：包在但「坏了」—— 补丁被冲掉 / 服务起不来 / 升级中断后收尾。
+ *
+ * 刻意**不挪包也不走 npm**：包没换就没必要冒险动 npm 的账（升级链里那步改名备份 +
+ * 回滚是为换版本准备的，修复根本不换版本）。只做「重打补丁 + 起服务」两件事 ——
+ * 比强制重装快（不下载 300MB），也比它安全（npm 账上一笔都不动）。
+ */
+async function apiRepair() {
+  if (!fs.existsSync(PATCHER)) {
+    return { ok: false, out: '补丁器缺失：' + PATCHER + '。重跑 install-gateway.sh 把生命周期四件套补回来。' }
+  }
+  if (!fs.existsSync(DSH_PKG_JSON)) {
+    return { ok: false, out: 'dsh 还没装（读不到 ' + DSH_PKG_JSON + '）。装 dsh 走控制台的安装向导，或重跑 install-gateway.sh。' }
+  }
+  return startLifecycleJob('repair', '修复 dsh（重打补丁 + 起服务）', repairDsh)
+}
+
+async function repairDsh(job) {
+  const before = installedVersion()
+  jobLine(job, '◆ 不挪包、不走 npm，只重打补丁 + 起服务（当前版本 ' + before + '）')
+
+  const pc = await runPatchChain(job)
+  if (pc.patchFailed) {
+    return {
+      ok: false,
+      out: '补丁没全打好（patches.py 退出码 ' + pc.code + '）。上游可能改了被补丁的那几个文件；' +
+        '要换版本走「更新」，或卸载后重装。',
+      state: await buildState(),
+    }
+  }
+
+  const svcErr = await ensureWebService(job)
+  if (svcErr) return Object.assign({}, svcErr, { state: await buildState() })
+
+  const ver = await readVersion()
+  jobLine(job, '✓ dsh --version → ' + ver)
+  return {
+    ok: true,
+    out: '补丁已重打，dsh-web 已起来并验证（版本 ' + ver + '）。',
+    state: await buildState(),
+  }
+}
+
+/**
+ * 卸载：把 uninstall.sh 复制到 TMPDIR，**detached** 跑。
+ *
+ * 为什么必须 detached + 复制：网关自己就是被删的对象 —— uninstall 会 sv down
+ * dsh-ctl 把它杀掉、还会删 share/dsh-ctl（脚本本身在那里）。在 HTTP 请求里等它，
+ * 响应还没写回连接就断了；原地跑会把自己删到一半卡住。所以：
+ *   · 复制到 $TMPDIR/dsh-uninstall-<ts>/（TMPDIR 不在卸载清单里）
+ *   · spawn(..., { detached: true }) + unref()：子进程进自己的进程组，网关被杀
+ *     它也不死，慢慢删 300MB 的包
+ *   · 输出追加进 $TMPDIR/dsh-uninstall.log，网关活着时每秒 tail 推进 job 现场
+ *   · run.sh 在脚本退出后把退出码落码（exit.code）—— 网关要是被杀了，重启时
+ *     靠它把账对上（reconcileJob / resumeDetached）
+ *
+ * 参数：默认 `-y --dsh`（把 npm 包一起卸，否则「继续安装」会被旧包挡住）；
+ * `body.all` = `-y --all`（连 ~/.dsh 用户数据一起删，「从手机上抹掉」那一档）。
+ */
+async function apiUninstall(body) {
+  if (!fs.existsSync(UNINSTALL_SH)) {
+    return { ok: false, out: '卸载脚本缺失：' + UNINSTALL_SH + '。手工执行 install/uninstall.sh 也能卸。' }
+  }
+  const started = startJob('uninstall', (body && body.all) ? '卸载（含用户数据）' : '卸载 dsh-termux 方案')
+  if (!started.ok) return started
+  const job = started.job
+  const all = !!(body && body.all)
+
+  let dir
+  try {
+    // 1) 复制卸载脚本 + 生成 run.sh（全用位置参数，脚本串里不拼任何用户输入）
+    dir = TMPDIR + '/dsh-uninstall-' + Date.now()
+    fs.mkdirSync(dir, { recursive: true })
+    fs.copyFileSync(UNINSTALL_SH, dir + '/uninstall.sh')
+    fs.writeFileSync(dir + '/run.sh',
+      '#!/bin/sh\n' +
+      '# 由 dsh-ctl-gateway 生成（' + dir + '/run.sh）\n' +
+      '# 职责：detached 跑卸载脚本，退出后把退出码落码 ——\n' +
+      '# 网关可能在任务跑的过程中被杀（sv down dsh-ctl），重启后靠落码对账。\n' +
+      'SCRIPT="$1"; MARK="$2"; shift 2\n' +
+      'bash "$SCRIPT" "$@"\n' +
+      'echo $? >"$MARK"\n', 'utf8')
+    fs.chmodSync(dir + '/run.sh', 0o755)
+
+    // 2) 日志清干净：旧卸载的尾部混进本次现场只会误导
+    try { fs.writeFileSync(TMPDIR + '/dsh-uninstall.log', '') } catch {}
+    const logFd = fs.openSync(TMPDIR + '/dsh-uninstall.log', 'a')
+    job.detach = {
+      dir, script: dir + '/uninstall.sh', log: TMPDIR + '/dsh-uninstall.log',
+      mark: dir + '/exit.code', pushed: 0, buf: '',
+    }
+    const args = [dir + '/run.sh', dir + '/uninstall.sh', dir + '/exit.code', '-y', all ? '--all' : '--dsh']
+    jobLine(job, '$ bash ' + args.join(' '))
+
+    // 3) detached 起来：stdio 全落日志文件（fd 继承给子进程，网关死了也能继续写）
+    const child = spawn(BIN + '/bash', args, {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: CHILD_ENV,
+    })
+    child.unref()
+    job.pid = child.pid
+    jobLine(job, '◆ 卸载在后台开始（PID ' + child.pid + '）：网关会被 sv down 杀掉，面板轮询会断 —— 这是正常的，不是故障')
+    persistJob(true)
+
+    // 4) 网关还活着时：子进程退出事件是主信号（run.sh 此时装好码了）
+    child.on('error', (e) => {
+      jobLine(job, '✗ 启动卸载子进程失败：' + e.message)
+      finishJob(job, { ok: false, out: '启动卸载子进程失败：' + e.message })
+      stopSupervise(job)
+    })
+    child.on('exit', (code) => {
+      if (job.status === 'running') finishDetached(job, typeof code === 'number' ? code : 1)
+    })
+
+    // 5) 兜底盯着（兼做「网关被杀后重启」的恢复入口）
+    superviseDetached(job)
+  } catch (e) {
+    finishJob(job, { ok: false, out: '准备卸载失败：' + String((e && e.stack) || e) })
+    return { ok: false, out: String((e && e.message) || e) }
+  }
+
+  return {
+    ok: true, jobId: job.id, job: jobSnapshot(),
+    out: '卸载已在后台开始。网关自己就是被删的对象 —— 网页会断连，别当故障；' +
+      '确认结果看日志：' + TMPDIR + '/dsh-uninstall.log',
+  }
+}
+
 /** 安装器 / 面板轮询用：当前任务的现场快照。 */
 async function apiJobStatus() {
   return { ok: true, job: jobSnapshot() }
@@ -786,6 +941,18 @@ function clipTail(s, max) {
  *   API 立刻返回 jobId → 后台跑 → 输出逐行实时收进 JOB.lines
  *   → 安装器 / 面板轮询 /ctl/api/jobstatus 拿现场。
  * 同一时间只允许一个任务（设备上并行两个 npm install 会互相踩），第二个拒绝。
+ *
+ * **job 落盘**：任务现场（steps / lines / 运行中状态 / detached 子进程的信息）
+ * 同步写进 JOB_FILE。为什么要：
+ *   · 面板晚几十秒来看、或网关被重启，jobstatus 仍回得出最后一个任务
+ *     （「完成态保留」以前纯内存，重启就没了）
+ *   · 卸载是 detached 的：网关自己就是被删的对象，sv down 会杀掉它。子进程
+ *     不死（自己的进程组），退出码由 run.sh 落码 —— 网关重启后（或 reinstall
+ *     后）能把账对上：接着盯、或按退出码结案。
+ *   · **并发护栏跨重启有效**：重启前有个卸载在跑，重启后新来的 install 依然
+ *     被拒（「另一个任务正在跑」）—— 内存版护栏重启即失效，正是 16:00 卸载 /
+ *     16:04 修复重建撞车那一类事故的入口。
+ * 落盘失败一律不影响任务本身（catch 吞掉）：最坏只是重启后丢现场，任务照跑。
  */
 let JOB = null
 
@@ -794,8 +961,14 @@ function startJob(kind, title) {
     return { ok: false, out: '另一个任务正在跑（' + JOB.title + '，已开始 ' +
       Math.round((Date.now() - JOB.startedAt) / 1000) + ' 秒）。等它完事再点。' }
   }
-  JOB = { id: kind + '-' + Date.now(), kind, title, status: 'running', steps: [], lines: [], startedAt: Date.now(), result: null }
+  JOB = {
+    id: kind + '-' + Date.now(), kind, title, status: 'running',
+    steps: [], lines: [], startedAt: Date.now(), result: null,
+    pid: 0,          // detached 子进程的 PID（只有 uninstall 用）
+    detach: null,    // {dir, script, log, mark, pushed, buf} —— 卸载专用的恢复信息
+  }
   jobLine(JOB, '◆ ' + title)
+  persistJob(true)
   return { ok: true, job: JOB }
 }
 
@@ -806,12 +979,14 @@ function jobLine(job, s) {
   if (!line) return
   job.lines.push(line)
   if (job.lines.length > 400) job.lines = job.lines.slice(-400)
+  persistJob()
 }
 
 /** 一步的定妆照（命令 / 退出码 / 输出摘要）：runStream 跑完一步 push 一次。 */
 function jobStep(job, cmd, code, out) {
   if (!job) return
   job.steps.push({ cmd, code, out: clipTail(out, 4000) })
+  persistJob()
 }
 
 /** 给安装器 / 面板轮询的快照：最近 160 行现场 + 步骤 + 耗时 + 最终结果。 */
@@ -829,6 +1004,180 @@ function finishJob(job, result) {
   job.result = result || { ok: false, out: '（无结果）' }
   jobLine(job, (job.status === 'done' ? '✓ 完成' : '✗ 失败') +
     '（共 ' + Math.round((Date.now() - job.startedAt) / 1000) + ' 秒）')
+}
+
+/**
+ * 把 JOB 写进 JOB_FILE。防抖 300ms：npm 一秒吐几百行，逐行同步写盘没有意义；
+ * 开始 / 步骤 / 结束这些里程碑强制立即写（force=true）。
+ * 原子写：先 .tmp 再 rename —— 被杀到一半也只可能是旧文件或新文件，不会是半截 JSON。
+ */
+let persistDue = false
+function persistJob(force) {
+  if (!JOB) return
+  if (!force) {
+    if (persistDue) return
+    persistDue = true
+    setTimeout(() => { persistDue = false; persistJob(true) }, 300)
+    return
+  }
+  persistDue = false
+  try {
+    const tmp = JOB_FILE + '.tmp'
+    fs.writeFileSync(tmp, JSON.stringify(JOB) + '\n', 'utf8')
+    fs.renameSync(tmp, JOB_FILE)
+  } catch {}   // 落盘失败不杀任务：最坏重启后丢现场
+}
+
+/**
+ * 启动时把盘上的任务对上账（job 落盘的读侧）。
+ *   · done/failed → 直接恢复成「最后一个任务」：jobstatus 照常回看现场
+ *   · running + detach（卸载）→ 子进程不随网关死：退出码落码在了就结案，
+ *     PID 还活着就接着盯现场，都没有就标中断
+ *   · running 无 detach（install/repair/upgrade）→ 网关一死输出流就断了，
+ *     子进程（npm）可能仍在后台跑完，但现场续不上：标「中断」，结果以 dsh
+ *     当前状态为准（看版本行 / 服务状态）
+ * 记录有任何看不懂的字段就当没有（防手改 / 跨版本）。
+ */
+function reconcileJob() {
+  let rec = null
+  try { rec = JSON.parse(readText(JOB_FILE)) } catch { return }
+  if (!rec || typeof rec !== 'object' || !rec.kind || !Number(rec.startedAt)) return
+  if (!Array.isArray(rec.lines) || !Array.isArray(rec.steps)) return
+
+  JOB = {
+    id: String(rec.id || rec.kind + '-restored'), kind: String(rec.kind),
+    title: String(rec.title || rec.kind),
+    status: rec.status === 'done' ? 'done' : rec.status === 'failed' ? 'failed' : 'running',
+    steps: rec.steps, lines: rec.lines.slice(-400),
+    startedAt: Number(rec.startedAt), result: rec.result || null,
+    pid: Number(rec.pid) || 0,
+    detach: rec.detach && typeof rec.detach === 'object' && rec.detach.script ? rec.detach : null,
+  }
+  if (JOB.status !== 'running') return         // 已结束：留着给 jobstatus 回看
+  if (JOB.detach) return resumeDetached(JOB)
+  interruptJob(JOB, '网关在任务运行中被重启。子进程（npm 等）不随网关死，可能已在后台跑完，' +
+    '但输出现场续不上了 —— 结果以 dsh 当前状态为准：看版本行与服务状态。')
+}
+
+/** 运行中的任务被网关重启打断：诚实标成失败，不假装完成也不悄悄丢失。 */
+function interruptJob(job, msg) {
+  job.status = 'failed'
+  job.result = { ok: false, out: '⚠ 任务中断：' + msg }
+  jobLine(job, '⚠ 网关重启：任务现场到此中断')
+  persistJob(true)
+}
+
+/**
+ * 恢复一个 detached 卸载任务（网关重启时盘上还留着 running 状态）。
+ * 优先级：退出码落码（子进程已跑完）> PID 还活着（接着盯）> 都没有（中断）。
+ * PID 复用是这条判据的理论风险 —— 只有刚重启的几秒内会查，且最坏后果只是
+ * 把一个不相关的进程「当成」卸载子进程盯着，超时后自动放弃。
+ */
+function resumeDetached(job) {
+  const code = readExitMark(job.detach.mark)
+  if (code !== null) {
+    jobLine(job, '◆ 网关重启时卸载已跑完，按落码结案')
+    return finishDetached(job, code)
+  }
+  if (pidAlive(job.pid)) {
+    jobLine(job, '◆ 网关重启：卸载子进程（PID ' + job.pid + '）仍在跑，接着盯现场')
+    tailInto(job, job.detach.log)     // 重启前没推完的日志先补上
+    return superviseDetached(job)
+  }
+  interruptJob(job, '卸载子进程（PID ' + job.pid + '）已不在，也没留下退出码。' +
+    '人工确认：ls $PREFIX/share/dsh-ctl 与 dsh 包目录，看 ' + job.detach.log + '。')
+}
+
+/** PID 还在不在（0 信号只是探测，不打断进程）。 */
+function pidAlive(pid) {
+  if (!pid) return false
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+/** run.sh 落的退出码；文件不在 / 内容不是数字都算「还没落」。 */
+function readExitMark(p) {
+  const s = readText(p).trim()
+  return /^-?\d+$/.test(s) ? Number(s) : null
+}
+
+function stopSupervise(job) {
+  if (job && job.detachedTimer) { clearInterval(job.detachedTimer); job.detachedTimer = null }
+}
+
+/**
+ * 接着盯一个 detached 卸载子进程（网关重启后，或任务刚起来时）。
+ * 每秒三件事：退出码落码了吗 → PID 还在吗 → 日志新出来的行推进现场。
+ * 15 分钟还没完就不再盯（子进程仍在后台跑，不杀它 —— rm -rf 杀到一半更糟）。
+ */
+function superviseDetached(job) {
+  if (job.detachedTimer) return
+  const d = job.detach
+  const t0 = Date.now()
+  job.detachedTimer = setInterval(() => {
+    const code = readExitMark(d.mark)
+    if (code !== null) return finishDetached(job, code)
+    if (!pidAlive(job.pid)) {
+      // 进程没了却没落码：被外部信号干掉了（不是脚本自己退的）
+      return finishDetached(job, null)
+    }
+    tailInto(job, d.log)
+    if (Date.now() - t0 > NPM_UPGRADE_TIMEOUT) {
+      stopSupervise(job)
+      finishJob(job, {
+        ok: false,
+        out: '卸载超过 ' + Math.round(NPM_UPGRADE_TIMEOUT / 60000) + ' 分钟还没完，网关侧不再盯现场。' +
+          '子进程仍在后台跑，回设备看日志确认：' + d.log,
+      })
+    }
+  }, 1000)
+}
+
+/**
+ * detached 卸载结案：退出码 + 日志尾部拼成结果。
+ * code === null 表示进程消失但没留下退出码（被 kill 等），算失败但说明白原因。
+ */
+function finishDetached(job, code) {
+  if (job.status !== 'running') return
+  stopSupervise(job)
+  const d = job.detach || {}
+  const tail = d.log ? tailFile(d.log, 40) : ''
+  const head = code === 0
+    ? '✓ 卸载完成。'
+    : code === null
+      ? '✗ 卸载进程结束了，但没留下退出码（可能被外部信号杀掉）。'
+      : '✗ 卸载脚本退出码 ' + code + '（有残留或参数不对，看日志）。'
+  finishJob(job, {
+    ok: code === 0,
+    out: head + '\n如果你还能看到这一行，说明网关活着 —— 卸载本该把它自己也删掉（sv down dsh-ctl），' +
+      '没删掉多半是卸载中断了。确认结果：' + (d.log || '（无日志路径）') +
+      (tail ? '\n--- 日志尾部 ---\n' + tail : ''),
+  })
+}
+
+/** 读日志文件的最后 N 行。 */
+function tailFile(p, n) {
+  const s = readText(p)
+  if (!s) return ''
+  return s.split('\n').filter(Boolean).slice(-Math.max(1, n)).join('\n')
+}
+
+/**
+ * 把日志新长出来的行推进 job.lines。
+ * 按字节偏移记进度（d.pushed），半行攒在 d.buf 里等下一次补齐 —— 直接切行会把
+ * 一行输出劈成两行推进现场。
+ */
+function tailInto(job, file) {
+  const d = job.detach
+  if (!d) return
+  const txt = readText(file)
+  if (!txt || txt.length <= (d.pushed || 0)) return
+  d.buf = (d.buf || '') + txt.slice(d.pushed || 0)
+  d.pushed = txt.length
+  let i
+  while ((i = d.buf.indexOf('\n')) >= 0) {
+    jobLine(job, d.buf.slice(0, i))
+    d.buf = d.buf.slice(i + 1)
+  }
 }
 
 /**
@@ -938,6 +1287,8 @@ async function buildState() {
    // 网关优先：dsh 没装时面板的版本行会提示「重跑安装脚本」；引导令牌处于激活期时面板要提示它的存在。
    dshMissing: !fs.existsSync(DSH_PKG_JSON),
    bootstrapActive: fs.existsSync(BOOTSTRAP_TOKEN),
+   // 卸载脚本随网关下发：在场才给「卸载」按钮（apiUninstall 的前提）
+   uninstallAvailable: fs.existsSync(UNINSTALL_SH),
   dshVersion: ver,
    nodeVersion: process.version,
     host: os.hostname(),
@@ -1382,6 +1733,8 @@ const CTL_API = {
  dshcheck: apiDshCheck,
  dshupgrade: apiDshUpgrade,
  install: apiInstall,
+ repair: apiRepair,
+ uninstall: apiUninstall,
  jobstatus: apiJobStatus,
  restart: async () => {
     const r = await runFile(BIN + '/sv', ['restart', 'dsh-web'], 30000)
@@ -1394,8 +1747,8 @@ const CTL_API = {
 
 /* dsh 还没装时，引导令牌持有者能用的接口子集。
  * save / apply / manifest / key 这些能改配置的一律排除：引导令牌是明文 URL 里传的，
- * 谁拿到链接谁能点 —— 可以装东西、不可以改 dsh 的后端配置。 */
-const BOOTSTRAP_WHITELIST = ['state', 'install', 'jobstatus', 'dshcheck', 'dshupgrade', 'log', 'restart']
+ * 谁拿到链接谁能点 —— 可以装 / 修 / 卸（生命周期），不可以改 dsh 的后端配置。 */
+const BOOTSTRAP_WHITELIST = ['state', 'install', 'repair', 'uninstall', 'jobstatus', 'dshcheck', 'dshupgrade', 'log', 'restart']
 
 /* ------------------------------------------------------- 引导令牌
  *
@@ -1743,6 +2096,10 @@ function bind() {
   })
   server = s
 }
+
+// 启动第一件事：把上次留在盘上的任务对上账 —— 已结束的留作 jobstatus 回看现场，
+// 运行中的 detached 卸载接着盯（并发护栏因此跨重启有效）
+reconcileJob()
 
 bind()
 

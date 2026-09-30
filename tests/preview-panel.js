@@ -79,6 +79,8 @@ const STATE = {
     model: 'deepseek-ai/DeepSeek-V4-Flash-0731',
   },
   migrated: false,
+  dshMissing: false,
+  uninstallAvailable: true,
   dshFlavor: {
     patcher: true,
     flockOk: true,
@@ -109,6 +111,14 @@ const STATE = {
 }
 
 const HIT = {}   // keyVar -> 被探测了几次：第一次故意回 429，用来实测面板的退避重试
+const JOBS = {}  // id -> 假任务：生命周期接口的 job 契约预览
+
+/** 与真网关 jobSnapshot 同构：最近 160 行现场 + 步骤 + 耗时 + 结果。 */
+const jobSnapshot = (job) => job && {
+  id: job.id, kind: job.kind, title: job.title, status: job.status,
+  steps: job.steps, lines: job.lines.slice(-160),
+  elapsedS: job.elapsedS, result: job.result,
+}
 
 const j = (res, obj) => {
   const s = JSON.stringify(obj)
@@ -249,6 +259,29 @@ http.createServer((req, res) => {
              STATE.sites.reduce((n, s) => n + s.tokens.length, 0) + ' 把密钥。',
         state: STATE,
       })
+    }
+    // job 契约的预览：生命周期接口立刻回 jobId，jobstatus 回一个已完成的任务。
+    // 真网关里这些是后台真跑的长任务；预览里只演示弹窗的两条落点（完成 / 结果链接）。
+    if (url.pathname === '/ctl/api/install' ||
+        url.pathname === '/ctl/api/repair' ||
+        url.pathname === '/ctl/api/uninstall') {
+      const kind = url.pathname.slice('/ctl/api/'.length)
+      const isUninstall = kind === 'uninstall'
+      const job = {
+        id: kind + '-preview-' + Date.now(), kind, title: '预览任务',
+        status: 'running', steps: [], lines: ['◆ 预览：任务已「开始」'],
+        elapsedS: 0, result: null,
+      }
+      JOBS[job.id] = job
+      const result = isUninstall
+        ? { ok: true, out: '（本地预览）卸载完成 —— 真机会把网关自己也删掉，这一行你看不到。' }
+        : { ok: true, out: '（本地预览）完成。', appUrl: STATE.dshUrl }
+      setTimeout(() => { job.status = 'done'; job.result = result; job.lines.push('✓ 完成（预览）') }, 800)
+      return setTimeout(() => j(res, { ok: true, jobId: job.id, job: jobSnapshot(job) }), 120)
+    }
+    if (url.pathname === '/ctl/api/jobstatus') {
+      const last = Object.keys(JOBS).slice(-1)[0]
+      return setTimeout(() => j(res, { ok: true, job: last ? jobSnapshot(JOBS[last]) : null }), 100)
     }
     if (url.pathname.startsWith('/ctl/api/')) return j(res, { ok: true, out: '本地预览：不执行任何动作。' })
     res.writeHead(404).end('nope')

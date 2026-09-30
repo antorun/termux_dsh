@@ -172,9 +172,42 @@ for (const [name, pat, want] of [
   console.log('版本 更新 ' + name + ': ' + c + (good ? ' ✓' : ' ✗ 期望 ' + (want === 0 ? '0' : '≥' + want)))
 }
 
+// 7h) 生命周期：安装向导 + 修复 + 卸载。三条硬约束：
+//     ① dsh 没装时必须有向导卡（#wizard），否则 8030 首页连个能点的地方都没有；
+//     ② 修复 / 卸载是「装好之后」的常规入口，挂在服务卡上；
+//     ③ 卸载会杀掉网关自己，轮询断连必须被当成预期行为（missHint），不能报故障。
+for (const [name, pat, want] of [
+  ['安装向导卡 id="wizard"', /id="wizard"/, 1],
+  ['向导通道下拉 id="wChan"', /id="wChan"/, 1],
+  ['向导版本输入 id="wVer"', /id="wVer"/, 1],
+  ['安装入口 doInstall（定义+调用）', /doInstall\(/, 2],
+  ['安装走 /ctl/api/install', /api\('install'/, 1],
+  ['修复按钮 id="btnRepair"', /id="btnRepair"/, 1],
+  ['修复入口 doRepair（定义+调用）', /doRepair\(/, 2],
+  ['修复走 /ctl/api/repair', /api\('repair'/, 1],
+  ['卸载按钮 id="btnUninstall"', /id="btnUninstall"/, 1],
+  ['卸载 --all 开关 id="unAll"', /id="unAll"/, 1],
+  ['卸载入口 doUninstall（定义+调用）', /doUninstall\(/, 2],
+  ['卸载走 /ctl/api/uninstall', /api\('uninstall'/, 1],
+  ['卸载前有确认（confirm）', /确定卸载|连用户数据一起删/, 2],
+  // 卸载 = 网关被删：断连时间必须放宽（默认 30 秒对卸载就是误报）
+  ['卸载的断连容忍传了 missMs', /missMs: *180000/, 1],
+  ['卸载断连有解释（missHint）', /missHint: *'/, 1],
+  ['卸载提示后台执行（detached）', /detached|后台执行/, 1],
+  // 向导的显隐由 applyState 按 dshMissing 切换 —— 装好不消失就是坏体验
+  ['applyState 切向导显隐', /getElementById\('wizard'\)\.style\.display/, 1],
+  ['applyState 切修复按钮显隐', /getElementById\('btnRepair'\)\.style\.display/, 1],
+  ['applyState 切卸载按钮显隐', /getElementById\('btnUninstall'\)\.style\.display/, 1],
+]) {
+  const c = (s.match(new RegExp(pat.source, 'g')) || []).length
+  const good = want === 0 ? c === 0 : c >= want
+  console.log('生命周期 ' + name + ': ' + c + (good ? ' ✓' : ' ✗ 期望 ' + (want === 0 ? '0' : '≥' + want)))
+}
+
 // 8) 需要存在的字样
 const must = ['接口列表', '新增接口', '增加密钥', 'id="modal"', 'persistManifest', 'draftPayload',
-  '同一时间只有一把', '健康', '显示名', '环境变量名', '接口地址', '当前生效', '已写入 dsh', '编辑接口']
+  '同一时间只有一把', '健康', '显示名', '环境变量名', '接口地址', '当前生效', '已写入 dsh', '编辑接口',
+  '安装 dsh', '开始安装', '修复（重打补丁）', '卸载']
 const lost = must.filter((x) => !s.includes(x))
 console.log('必须在的字样 ' + must.length + ' 个，' + (lost.length ? '✗ 缺: ' + lost.join(',') : '✓ 齐全'))
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!@BASH@
 # tests/test-gateway.sh —— 在 Mac 上用假树 + 假上游真跑 bin/dsh-ctl-gateway
 #
 # 网关是整个方案的入口，最怕的是鉴权逻辑和生命周期任务（install/repair/
@@ -19,9 +19,11 @@
 #   T1 引导令牌鉴权（未登录、dsh 未装）：引导页 / 面板 / 401 / 403 / 白名单
 #   T2 安装任务：jobId → 轮询 → done / appUrl / 并发拒绝
 #   T3 修复幂等：不重装包（npm 调用数不变）
-#   T4 卸载：detached 子进程 + job 结果
-#   T5 完成态保留 / log 白名单
-#   T6 登录后撤销引导令牌（404 一次 → 令牌文件没了）
+#   T4 登录后撤销引导令牌（404 一次 → 令牌文件没了）—— 刻意在卸载之前：
+#       卸载会把令牌文件连带删掉，放后面就分不清「是谁删的」
+#   T5 卸载：detached 子进程真拆假树；杀掉网关再重启 → job 落盘恢复
+#       （PID 还活着就续盯 / 退出码已落就结案）
+#   T6 完成态落盘保留：再重启一次 jobstatus 仍在 / log 白名单 / restart 放行
 #
 # 跑法：bash tests/test-gateway.sh（从仓库根目录）
 set -u
@@ -109,8 +111,13 @@ build_tree() {
   # 桩脚本统一把调用记进树外的 calls 文件，便于断言"谁被调了几次"
   : >"$WORK/calls"
 
+  # 桩的 shebang 写成 @BASH@ 占位符，下面统一替换成本机真 bash 的绝对路径：
+  # 不能用 #!@BASH@ —— env 按 PATH 解析，而网关子进程的 PATH 第一项就是
+  # 假树 bin（里面有同名 bash 桩），内核 exec 桩 → shebang → env → 又解析到桩，死循环。
+  REAL_BASH=$(command -v bash)
+
   cat >"$STUB/bin/npm" <<'STUB_NPM'
-#!/bin/bash
+#!@BASH@
 STUB=$(cd "$(dirname "$0")/.." && pwd)
 echo "npm $*" >>"$STUB/../calls"
 if [ "$1" = "install" ]; then
@@ -122,26 +129,38 @@ if [ "$1" = "install" ]; then
   printf '{"name":"@deepseek-ai/dsh","version":"%s"}\n' "$ver" >"$dir/package.json"
   exit 0
 fi
+if [ "$1" = "uninstall" ]; then
+  # 真 npm 卸 300MB 要好一会：给 T5「杀网关再重启」的落盘恢复留窗口
+  sleep 2
+  rm -rf "$STUB/lib/node_modules/@deepseek-ai/dsh"
+  exit 0
+fi
 echo "npm 桩：意外参数 $*" >&2
 exit 1
 STUB_NPM
 
   cat >"$STUB/bin/python3" <<'STUB_PY'
-#!/bin/bash
+#!@BASH@
 STUB=$(cd "$(dirname "$0")/.." && pwd)
 echo "python3 $*" >>"$STUB/../calls"
 exit 0
 STUB_PY
 
   cat >"$STUB/bin/bash" <<'STUB_BASH'
-#!/bin/bash
+#!@BASH@
 STUB=$(cd "$(dirname "$0")/.." && pwd)
 echo "bash $*" >>"$STUB/../calls"
+# 网关 detached 卸载跑的是 TMPDIR/dsh-uninstall-*/run.sh —— 这条路径必须真执行：
+# 否则卸载根本没发生、退出码也不会落码，job 落盘的恢复路就没法测。
+# 其余调用保持纯桩（只记录、不执行），好断言「谁被调了几次」。
+case "$1" in
+  */dsh-uninstall-*) exec @BASH@ "$@" ;;
+esac
 exit 0
 STUB_BASH
 
   cat >"$STUB/bin/sv" <<'STUB_SV'
-#!/bin/bash
+#!@BASH@
 STUB=$(cd "$(dirname "$0")/.." && pwd)
 echo "sv $*" >>"$STUB/../calls"
 if [ "$1" = "status" ]; then
@@ -151,7 +170,7 @@ exit 0
 STUB_SV
 
   cat >"$STUB/bin/dsh" <<'STUB_DSH'
-#!/bin/bash
+#!@BASH@
 STUB=$(cd "$(dirname "$0")/.." && pwd)
 f="$STUB/lib/node_modules/@deepseek-ai/dsh/package.json"
 if [ -f "$f" ]; then
@@ -162,14 +181,14 @@ fi
 STUB_DSH
 
   cat >"$STUB/bin/dsh-web-url" <<'STUB_WU'
-#!/bin/bash
+#!@BASH@
 echo "http://127.0.0.1:3080/?token=STUBTOKEN123"
 STUB_WU
 
   # provisionDsh 第 4 步会跑 BIN/dsh-patch-lan-settings（真脚本的 shebang 指向
   # Termux 路径，Mac 上不存在，所以也用桩）
   cat >"$STUB/bin/dsh-patch-lan-settings" <<'STUB_PL'
-#!/bin/bash
+#!@BASH@
 STUB=$(cd "$(dirname "$0")/.." && pwd)
 echo "dsh-patch-lan-settings $*" >>"$STUB/../calls"
 exit 0
@@ -178,7 +197,7 @@ STUB_PL
   # lanIp() 跑 ifconfig（execSync 走 PATH，假树 bin 排在最前）
   # 内容必须 echo 出来：lanIp() 解析的是 stdout
   cat >"$STUB/bin/ifconfig" <<STUB_IFC
-#!/bin/bash
+#!@BASH@
 echo "en0: flags=8863 mtu 1500"
 echo "  inet $FAKE_IP netmask 0xffffff00 broadcast 192.168.3.255"
 echo "lo0: flags=8049 mtu 16384"
@@ -186,6 +205,7 @@ echo "  inet 127.0.0.1 netmask 0xff000000"
 STUB_IFC
 
   for f in npm python3 bash sv dsh dsh-web-url dsh-patch-lan-settings ifconfig; do
+    sed -i "s|@BASH@|$REAL_BASH|g" "$STUB/bin/$f"
     chmod +x "$STUB/bin/$f"
   done
 }
@@ -199,11 +219,17 @@ postBsCode() { # postBsCode <api> <json> → 只输出状态码
     -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" \
     -d "$2" "$BASE/ctl/api/$1"
 }
+postCk() { # postCk <api> <json> → 已登录 cookie POST，输出 body
+  # 卸载（T5）会把 share/dsh-ctl 连令牌文件一起删掉 —— 卸载之后只能走登录态
+  curl -s -m 20 -X POST -H 'content-type: application/json' \
+    -H "$COOKIE" -d "$2" "$BASE/ctl/api/$1"
+}
+POLLER=postBs   # 轮询用的请求器：T5 之后引导令牌没了，换成 postCk
 pollJob() { # pollJob <超时秒> → JOB 变量；返回 0=done 1=failed/超时
   local i
   JOB=''
   for i in $(seq 1 "$1"); do
-    JOB=$(postBs jobstatus '{}')
+    JOB=$($POLLER jobstatus '{}')
     case "$JOB" in
       *'"status":"done"'*) return 0 ;;
       *'"status":"failed"'*) return 1 ;;
@@ -211,6 +237,24 @@ pollJob() { # pollJob <超时秒> → JOB 变量；返回 0=done 1=failed/超时
     sleep 1
   done
   return 1
+}
+# 杀掉网关再原样重启：模拟「sv down / 崩溃 / 手滑重启」。
+# job 落盘就是为了这一刻 —— 新进程起来时把盘上的任务对上账。
+restart_gw() {
+  kill "$GW_PID" 2>/dev/null
+  wait "$GW_PID" 2>/dev/null
+  PREFIX="$STUB" HOME="$STUB/home" TMPDIR="$WORK/tmp" SVDIR="$STUB/var/service" \
+    node "$GW" 127.0.0.1 "$GW_PORT" 127.0.0.1 "$UP_PORT" >>"$WORK/gw.log" 2>&1 &
+  GW_PID=$!
+  GW_READY=0
+  for i in $(seq 1 40); do
+    c=$(curl -s -m 2 -o /dev/null -w '%{http_code}' "$BASE/ctl" 2>/dev/null || true)
+    [ "$c" = "200" ] && { GW_READY=1; break; }
+    sleep 0.5
+  done
+  if [ "$GW_READY" != 1 ]; then
+    echo "网关重启失败，看 $WORK/gw.log"; tail -20 "$WORK/gw.log"; exit 2
+  fi
 }
 
 # ================================================================== 启动
@@ -276,7 +320,7 @@ has "state dshMissing" "$BODY" '"dshMissing":true'
 has "state bootstrapActive" "$BODY" '"bootstrapActive":true'
 has "state uninstallAvailable" "$BODY" '"uninstallAvailable":true'
 
-# 已登录浏览器才知道的 cookie；T6 里用它模拟登录态
+# 已登录浏览器才知道的 cookie；T4 起用它模拟登录态（revoke / 卸载后的请求都走它）
 COOKIE='cookie: session=loggedin-user'
 
 # body 里带 bootstrap 也算
@@ -346,37 +390,10 @@ BODY=$(postBs state '{}')
 has "修复后版本不变" "$BODY" "\"dshVersion\":\"$INSTALL_VER\""
 
 # ================================================================== T4
-sec "T4. 卸载（detached 后台子进程）"
-RES=$(postBs uninstall '{}')
-has "uninstall 立即返回 ok:true" "$RES" '"ok":true'
-has "uninstall 返回 jobId" "$RES" '"jobId"'
-has "uninstall 提示后台跑" "$RES" '后台'
-if pollJob 90; then
-  ok "uninstall 轮询到 done"
-  has "uninstall 结果 ok" "$JOB" '"result":{"ok":true'
-else
-  bad "uninstall 任务没完成：$JOB"
-fi
-CALLS=$(cat "$WORK/calls")
-has "卸载脚本被 detached 执行" "$CALLS" ' -y --dsh'
-has "卸载脚本来自 TMPDIR 副本" "$CALLS" 'dsh-uninstall-'
-
-# ================================================================== T5
-sec "T5. 空闲态 / 白名单接口"
-# 卸载任务已完成 → 保留 done 现场供面板回看
-sleep 1
-BODY=$(postBs jobstatus '{}')
-has "jobstatus 保留完成现场" "$BODY" '"status":"done"'
-has "最后任务是 uninstall" "$BODY" '"kind":"uninstall"'
-BODY=$(postBs log '{"name":"dsh-web","lines":5}')
-has "log 在白名单里" "$BODY" '"ok":true'
-check "restart 也放行（sv 桩无条件 ok）" \
-  "$(postBsCode restart '{}')" 200
-
-# ================================================================== T6
-sec "T6. 登录一次后撤销引导令牌"
+sec "T4. 登录一次后撤销引导令牌"
+# 刻意放在卸载之前：卸载会把 share/dsh-ctl（令牌文件所在）一并删掉，
+# 先验「登录撤销」，后面令牌没了就是卸载干的，两边不会互相掩盖。
 printf 'authed' >"$WORK/mode"
-COOKIE='cookie: session=loggedin-user'
 BODY=$(curl -s -m 8 -H "$COOKIE" "$BASE/ctl")   # dsh 已"登录"：这一下就作废令牌
 check "/ctl 已登录 200" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -H "$COOKIE" "$BASE/ctl")" 200
 has "已登录直接给面板" "$BODY" 'id="wizard"'
@@ -389,6 +406,54 @@ check "撤销后 state 带旧令牌 401" "$(postBsCode state '{}')" 401
 has "/app 已登录回上游页面" "$(curl -s -m 8 -H "$COOKIE" "$BASE/app")" 'UPSTREAM-APP-HTML'
 BODY=$(curl -s -m 8 -H "$COOKIE" "$BASE/")
 has "/ 已登录给面板" "$BODY" 'id="wizard"'
+
+# ================================================================== T5
+sec "T5. 卸载（detached 子进程 + 杀网关再重启的落盘恢复）"
+# 令牌上一步已撤销、且卸载会删 share/dsh-ctl —— 从这里起一律走登录态
+POLLER=postCk
+RES=$(postCk uninstall '{}')
+has "uninstall 立即返回 ok:true" "$RES" '"ok":true'
+has "uninstall 返回 jobId" "$RES" '"jobId"'
+has "uninstall 提示后台跑" "$RES" '后台'
+
+# 杀掉网关 = 模拟「卸载把网关自己删掉」（真机上 sv down dsh-ctl）。
+# detached 子进程不在网关的进程组里 —— 杀不死，继续拆树；job 状态已落盘。
+restart_gw
+# 新网关起来时对账：退出码落码了（子进程已跑完）→ 结案；PID 还活着 → 续盯到它跑完
+if pollJob 90; then
+  ok "重启后任务轮询到 done（job 落盘 + detached 恢复）"
+  has "uninstall 结果 ok" "$JOB" '"result":{"ok":true'
+else
+  bad "uninstall 任务没完成：$JOB"
+fi
+CALLS=$(cat "$WORK/calls")
+has "卸载脚本被 detached 执行" "$CALLS" ' -y --dsh'
+has "卸载脚本来自 TMPDIR 副本" "$CALLS" 'dsh-uninstall-'
+if [ -d "$STUB/share/dsh-ctl" ]; then
+  bad "假树的 share/dsh-ctl 没被删掉（detached 卸载没真跑）"
+else
+  ok "面板资源已删（detached 卸载真拆了假树）"
+fi
+if [ -d "$STUB/lib/node_modules/@deepseek-ai/dsh" ]; then
+  bad "dsh 包没被卸掉（--dsh 没生效）"
+else
+  ok "dsh 包已卸（--dsh）"
+fi
+
+# ================================================================== T6
+sec "T6. 完成态落盘保留（再重启一次仍在）+ 白名单接口"
+# 已结束的 job 写在盘上：再重启一次网关，jobstatus 照样回得出最后一个任务
+restart_gw
+sleep 1
+BODY=$(postCk jobstatus '{}')
+has "jobstatus 保留完成现场" "$BODY" '"status":"done"'
+has "最后任务是 uninstall" "$BODY" '"kind":"uninstall"'
+BODY=$(curl -s -m 8 -X POST -H 'content-type: application/json' -H "$COOKIE" \
+  -d '{"name":"dsh-web","lines":5}' "$BASE/ctl/api/log")
+has "log 在白名单里" "$BODY" '"ok":true'
+check "restart 也放行（sv 桩无条件 ok）" \
+  "$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+    -H "$COOKIE" -d '{}' "$BASE/ctl/api/restart")" 200
 
 # ==================================================================
 sec "结果"

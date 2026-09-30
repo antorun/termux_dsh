@@ -138,7 +138,8 @@ bash uninstall.sh -y --all    # 全拆：连 dsh 包 / 用户数据 / 工作目�
 卸载脚本的默认层只删 termux_dsh 自己装的东西（服务 / 工具 / 面板），**用户数据、补丁备份、
 工作目录、dsh npm 包一律保留** —— 和升级链同一个原则：可以失败回滚，但用户数据不丢；要彻底
 清掉用 `--all`。什么都不剩时再跑会报「没有可卸载的东西」并退出 0。
-控制台里也能卸（「卸载」按钮 = 后台 detached 跑同一个 `uninstall.sh`），见下文第十节。
+控制台里也能卸（「卸载」按钮 = 后台 detached 跑同一个 `uninstall.sh`，
+网关被杀也会在重启后靠落盘的 job 对账结案），见下文第十、十二节。
 
 ---
 
@@ -157,12 +158,12 @@ node tests/test-panel-ui.js            # 期望「失败 0 项」（当前 135 �
 # 设备上：验证「改配置是否需要重启」
 bash $PREFIX/bin/verify-hot-reload.sh
 
-# 卸载脚本：在 Mac 上造假树（假 $PREFIX + 假 $HOME + sv/npm 桩脚本）真跑 rm -rf
+# 卸载脚本：造假树（假 $PREFIX + 假 $HOME + sv/npm 桩脚本）真跑 rm -rf
 bash tests/test-uninstall.sh          # 期望「失败 0 项」（67 项断言）
 
 # 网关 + 生命周期：假树 + 假上游 node，真跑安装 / 修复 / 卸载 job（令牌鉴权、
-# 并发拒绝、回滚、卸载 detached、完成态保留、登录撤销令牌）
-bash tests/test-gateway.sh            # 期望「失败 0 项」（70 项断言，约 19 秒）
+# 并发拒绝、回滚、卸载 detached + 杀网关重启的 job 落盘恢复、完成态保留、登录撤销令牌）
+bash tests/test-gateway.sh            # 期望「失败 0 项」（72 项断言，约 19 秒）
 ```
 
 `test-panel-ui.js` 需要浏览器：装了 `playwright` 包就直接跑；只装 `playwright-core` 时用
