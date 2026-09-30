@@ -104,10 +104,14 @@ ssh <设备> 'bash ~/install-gateway.sh'
 `log` / `restart` 这些生命周期接口不用任何凭据。**改配置类的接口（`save` 等）一律 401** ——
 要先登录 dsh，cookie 就对网关这个地址生效；登录态下 `state` 才返回明文密钥，未登录只给掩码。
 
-`/app`（dsh 主界面）同样不用贴令牌链接：浏览器没 cookie 时网关自取 dsh 的登录
-令牌补上（302 → dsh 按 authority 种 cookie → 落回干净的 `/app`），有 cookie
-就直接取首页。手机本机直接开 `http://127.0.0.1:8030/` 也行 —— 网关在局域网
-IP 与 loopback 上各有一个监听（WiFi 没连都能用）。
+`/app`（dsh 主界面）同样不用贴令牌链接：浏览器没有效登录时网关自取 dsh 的登录
+令牌补上（302 → dsh 按 authority 种 cookie → 落回干净的 `/app`），已经登录
+（含在别的 authority 登过、cookie 已过期这类陈旧状态）会重新走一次令牌登录。
+手机本机直接开 `http://127.0.0.1:8030/` 也行 —— 网关在局域网 IP 与 loopback
+上各有一个监听（WiFi 没连都能用）。
+
+清单里**缺模型的密钥**不会拖死保存：它们按「草稿」留在清单里（刷新不丢），
+完整的接口照常写进 dsh，配齐模型后再保存就会写进去。
 
 > **dsh-lan 不用装**：它是无网关方案的局域网入口（`<lan-ip>:3080` 裸转发
 > + 注入 `--trusted-host`）。网关方案里这两件事 8030 与 `install-web-service.sh`
@@ -170,7 +174,7 @@ bash tests/test-uninstall.sh          # 期望「失败 0 项」（67 项断言�
 
 # 网关 + 生命周期：假树 + 假上游 node，真跑安装 / 修复 / 卸载 job（令牌鉴权、
 # 并发拒绝、回滚、卸载 detached + 杀网关重启的 job 落盘恢复、完成态保留、登录撤销令牌）
-bash tests/test-gateway.sh            # 期望「失败 0 项」（68 项断言，约 20 秒）
+bash tests/test-gateway.sh            # 期望「失败 0 项」（75 项断言，约 20 秒）
 ```
 
 `test-panel-ui.js` 需要浏览器：装了 `playwright` 包就直接跑；只装 `playwright-core` 时用

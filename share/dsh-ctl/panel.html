@@ -1355,15 +1355,24 @@ function persistManifest(extra){
 function save(restart, verify){
   if (!DRAFT.sites.length) { out('至少要有一个接口。'); return; }
   var bad = [];
+  var incomplete = [];   // 缺模型：能当草稿留着，不该拖死整表保存
   DRAFT.sites.forEach(function(s){
     if (!s.id || !s.baseURL) bad.push((s.name || s.id || '(无名接口)') + '（缺 id 或接口地址）');
     if (!s.tokens.length) bad.push((s.name || s.id) + '（一把密钥都没有）');
     s.tokens.forEach(function(t){
       if (!t.keyVar) bad.push(tokenName(t) + '（缺环境变量名）');
-      if (!t.models.length) bad.push(tokenName(t) + '（缺模型）');
+      if (!t.models.length) incomplete.push(tokenName(t));
     });
   });
-  if (bad.length) { out('这些还不完整：\n · ' + bad.join('\n · ')); return; }
+  if (bad.length) { out('这些有问题，不能保存：\n · ' + bad.join('\n · ')); return; }
+  // 缺模型的密钥写不进 dsh（它要求每把都有模型）：问一次，同意就当草稿留着 ——
+  // 完整的接口照常保存生效，草稿刷新不丢，配齐模型再保存就会写进去。
+  if (incomplete.length && !confirm('以下密钥还没有模型列表：\n · ' + incomplete.join('\n · ') +
+      '\n\n它们会作为草稿留在清单里，先不写进 dsh；完整的接口照常保存生效。\n' +
+      '拉模型的入口在密钥弹窗里「从端点拉取模型列表」。\n\n继续保存吗？')) {
+    out('已取消。去密钥弹窗拉一次模型列表再保存也行。'); return;
+  }
+  var incompleteNote = incomplete.length ? '\n\n草稿（没写进 dsh，配齐模型后会写）：\n · ' + incomplete.join('\n · ') : '';
 
   // dsh 至少要有一条能写进配置的路由：启用 + 已存密钥。
   var usable = allTokens().filter(function(r){ return r.t.enabled && (r.t.hasKey || r.t._newKey); });
@@ -1392,11 +1401,13 @@ function save(restart, verify){
   payload.restart = !!restart;
   payload.verify = !!verify;
   api('save', payload).then(afterSave);
+  if (incompleteNote) out('保存中…（清单里有草稿）' + incompleteNote);
 }
 
 function afterSave(j){
   var text = (j.steps || []).map(function(s){ return '$ ' + s.cmd + '\n' + (s.out || ''); }).join('\n\n');
-  if (!text) text = j.out || '';
+  if (!text) text = '';
+  if (j.out) text += (text ? '\n\n' : '') + j.out;   // 草稿提示之类的服务端附注
   out((j.ok ? '✓ 完成' : '✗ 失败') + '\n\n' + text);
   if (j.state) applyState(j.state);
   if (j.ok) clearNewKeys();   // 密钥值已经写进服务环境了，输入框不用再挂着明文

@@ -204,7 +204,22 @@ echo "lo0: flags=8049 mtu 16384"
 echo "  inet 127.0.0.1 netmask 0xff000000"
 STUB_IFC
 
-  for f in npm python3 bash sv dsh dsh-web-url dsh-patch-lan-settings ifconfig; do
+  # dsh-set-provider 桩：T4 的「草稿过滤」断言靠它看网关传进来的清单。
+  # 注意 T2 的安装步会把真的 dsh-set-provider 装进假树 —— 那之前用不到这个桩，
+  # T4 里要用还得 plant_provider 重新植一次。
+  cat >"$STUB/bin/dsh-set-provider" <<'STUB_SP'
+#!@BASH@
+STUB=$(cd "$(dirname "$0")/.." && pwd)
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--sites-file" ] && cp "$a" "$STUB/../provider.json"
+  prev="$a"
+done
+echo "dsh-set-provider $*" >>"$STUB/../calls"
+exit 0
+STUB_SP
+
+  for f in npm python3 bash sv dsh dsh-web-url dsh-patch-lan-settings ifconfig dsh-set-provider; do
     sed -i "s|@BASH@|$REAL_BASH|g" "$STUB/bin/$f"
     chmod +x "$STUB/bin/$f"
   done
@@ -305,6 +320,9 @@ has "/ 也是面板" "$(curl -s -m 8 "$BASE/")" 'id="wizard"'
 # STUBTOKEN123），有 cookie 就直接取首页；令牌走不通时落回说人话的登录页
 check "/app 无 cookie 跳自动登录" \
   "$(curl -s -m 8 -o /dev/null -w '%{redirect_url}' "$BASE/app")" "$BASE/app?token=STUBTOKEN123"
+# 陈旧 cookie（登过别的 authority / cookie 过期）的浏览器不能卡在登录页死循环
+check "/app 陈旧 cookie 照样跳自动登录" \
+  "$(curl -s -m 8 -o /dev/null -w '%{redirect_url}' -H 'cookie: dsh-auth-stale=deadvalue' "$BASE/app")" "$BASE/app?token=STUBTOKEN123"
 BODY=$(curl -s -m 8 -L "$BASE/app")
 check "/app 跟随跳转 200" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -L "$BASE/app")" 200
 has "/app 落地是登录页" "$BODY" '需要先登录'
@@ -401,7 +419,7 @@ has "登录后凭据给明文" "$BODY" "\"value\":\"$TEST_KEY\""
 unplant_key
 has "/app 已登录回上游页面" "$(curl -s -m 8 -H "$COOKIE" "$BASE/app")" 'UPSTREAM-APP-HTML'
 
-# save 不再是 401：登录态放行（桩树上保存成不成功无所谓，只看不再被拒）
+# save 不再是 401：登录态放行（空 body 会被网关的形状校验挡下，只看不再被拒）
 SC=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
   -H "$COOKIE" -d '{}' "$BASE/ctl/api/save")
 if [ "$SC" = "401" ]; then
@@ -409,6 +427,43 @@ if [ "$SC" = "401" ]; then
 else
   ok "登录后 save 不再 401（HTTP $SC）"
 fi
+
+# T2 的安装步把真的 dsh-set-provider 装进了假树；草稿过滤要看传给它的清单，
+# 把桩植回来（cp --sites-file → provider.json，退出 0）
+plant_provider() {
+  cat >"$STUB/bin/dsh-set-provider" <<'STUB_SP'
+STUB=$(cd "$(dirname "$0")/.." && pwd)
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--sites-file" ] && cp "$a" "$STUB/../provider.json"
+  prev="$a"
+done
+echo "dsh-set-provider $*" >>"$STUB/../calls"
+exit 0
+STUB_SP
+  sed -i "s|@BASH@|$REAL_BASH|g" "$STUB/bin/dsh-set-provider"
+  chmod +x "$STUB/bin/dsh-set-provider"
+}
+
+# 草稿过滤：同一接口里一把完整、一把缺模型 —— 完整的写进 dsh，缺模型的留清单
+plant_provider
+RES=$(postCk save '{"sites":[{"id":"mp","name":"mp","api":"openai-completions",
+  "baseURL":"https://e.example/v1","tokens":[
+    {"id":"full","keyVar":"DSH_MP_FULL","models":["auto"],"enabled":true},
+    {"id":"draft","keyVar":"DSH_MP_DRAFT","models":[]}]}],
+  "active":{"site":"mp","token":"full"},"restart":false}')
+has "save 带草稿也 ok" "$RES" '"ok":true'
+has "save 提示哪把是草稿" "$RES" 'mp-draft（缺模型）'
+PAYLOAD=$(cat "$WORK/provider.json")
+has "完整密钥写进了 dsh" "$PAYLOAD" '"id": "full"'   # 落盘用缩进 JSON：冒号后有空格
+if echo "$PAYLOAD" | grep -q '"id": "draft"'; then
+  bad "草稿被塞给了 dsh-set-provider"
+else
+  ok "草稿没塞给 dsh-set-provider"
+fi
+ARCHIVE=$(cat "$STUB/home/.dsh/sites.json")
+has "草稿留在清单（刷新不丢）" "$ARCHIVE" '"id": "draft"'
+has "清单里完整密钥也在" "$ARCHIVE" '"id": "full"'
 
 # 白名单接口对未登录仍然开放：登录不该把路走窄了
 check "state 不带 cookie 依旧 200" "$(postCode state '{}')" 200

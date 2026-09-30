@@ -1572,13 +1572,42 @@ async function apiSave(body) {
     })),
   }))
 
-  // 同一时间只有一把启用：落盘之前先把启用位归一 —— 只有 active 指的那把是启用的。
-  // dsh-set-provider 要求 active 指的那把必须 enabled，而多把 enabled 会被它写成多条路由。
-  const actKeep = normalizeActive(sites, activeSite, activeToken)
+  // 缺模型的密钥写不进 dsh（dsh-set-provider 按规矩拒），但整个清单不该被
+  // 它拖死：完整的照写，缺模型的按「草稿」留在清单里（刷新后还在，配齐了再写）。
+  // 启用归一只落在能写进 dsh 的完整密钥上，免得 active 指着一把不存在的路由。
+  const drafts = []
+  const dshSites = []
+  for (const s of sites) {
+    const tokens = []
+    for (const t of s.tokens) {
+      if (t.models.length && !t.defaultModel) t.defaultModel = t.models[0]
+      if (!t.models.length || !t.defaultModel) {
+        drafts.push(s.id + '-' + t.id + '（缺模型）')
+        continue
+      }
+      tokens.push(t)
+    }
+    if (tokens.length) dshSites.push(Object.assign({}, s, { tokens }))
+  }
+  const draftNote = drafts.length
+    ? '其中 ' + drafts.length + ' 把密钥缺模型，按草稿留在清单里、没写进 dsh：' + drafts.join('、') + '\n'
+    : ''
+
+  const actKeep = normalizeActive(dshSites, activeSite, activeToken)
+
+  // 一把完整的密钥都没有：清单照存（草稿也是用户的心血），dsh 配置不动。
+  if (!dshSites.length) {
+    try {
+      fs.writeFileSync(SITES_JSON, JSON.stringify({ active: { site: activeSite, token: activeToken }, sites }, null, 2) + '\n', 'utf8')
+    } catch (e) {
+      return { ok: false, steps, out: '写清单失败：' + String(e.message) }
+    }
+    return { ok: false, steps, out: '清单已存，但还没有一把完整的密钥（都缺模型）—— dsh 的配置没动，先不用重启。\n' + draftNote, state: await buildState() }
+  }
 
   const file = TMPDIR + '/dsh-sites-' + process.pid + '-' + Date.now() + '.json'
   try {
-    fs.writeFileSync(file, JSON.stringify({ active: actKeep, sites }, null, 2), 'utf8')
+    fs.writeFileSync(file, JSON.stringify({ active: actKeep, sites: dshSites }, null, 2), 'utf8')
     const r = await runFile(BIN + '/dsh-set-provider', ['--sites-file', file, '--no-restart'], 180000)
     steps.push({ cmd: 'dsh-set-provider --sites-file <清单> --no-restart', code: r.code, out: r.out })
     if (r.code !== 0) return { ok: false, steps, out: r.out }
@@ -1607,7 +1636,7 @@ async function apiSave(body) {
     steps.push({ cmd: 'dsh headless "只回答两个字：收到"', code: v.code, out: v.out })
     if (!v.ok) return { ok: false, steps, out: v.out, state: await buildState() }
   }
-  return { ok: true, steps, state: await buildState() }
+  return { ok: true, steps, state: await buildState(), out: draftNote || undefined }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -1954,10 +1983,14 @@ async function onRequest(req, res) {
         on401: () => html(res, 200, loginPage(req.headers.host || '', '令牌没通过：可能已过期。重新打开 /app 会自动接当前令牌，或去控制台首页拿新链接。')),
       })
     }
-    // 路由器模型：打开 /app 直接进 —— 没带 cookie 就自取 dsh 的登录令牌
-    // 补上（readToken 跑 dsh-web-url），让 dsh 自己种好 cookie 再回来；
-    // 浏览器有 cookie（可能已登录 / 可能是过期的）就按老路取首页。
-    if (!req.headers.cookie) {
+    // 路由器模型：打开 /app 直接进。先探这个浏览器对当前 authority 有没有
+    // 有效登录（带上它的 cookie 探）—— 有就取首页；没有（没登过 / cookie 过期 /
+    // 在别的 authority 登的，浏览器里有陈旧 cookie 也算这类）就自取 dsh 的登录
+    // 令牌补上：readToken 跑 dsh-web-url，302 到 /app?token=… 让 dsh 按
+    // 当前 authority 种好 cookie 再落回 /app。
+    // 不能只看「有没有 cookie」：陈旧 cookie 的浏览器会卡在登录页死循环。
+    const code = await probeAuth(req.headers.host || '', req.headers.cookie || '')
+    if (code !== 404) {
       const t = await readToken()
       const m = t && /token=([A-Za-z0-9_-]+)/.exec(t)
       if (m) {
