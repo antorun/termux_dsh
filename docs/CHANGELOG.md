@@ -1329,3 +1329,24 @@ bootstrap 的依赖环节因此改成三级防线：
 3. **降级重试**：还不行就只装硬依赖；全失败才退出，并在提示里直接
    给出那串 pkg remove 命令（ gtk3 / libdecor / sdl2 /
    shared-mime-info）让用户自救。
+
+回归：新增 `tests/test-bootstrap-local.sh` —— 本地造假 Termux 树（假
+`$PREFIX/bin` 里的 pkg/dpkg/runsvdir/pgrep/依赖桩 + 本地 http 源），
+不需要真机就能跑 bootstrap 的三条路径：A) 依赖齐全的 happy path、
+B) 软依赖降级（pkg 失败 → `dpkg --configure -a` 自愈 → 重试 → 警告
+继续）、C) 硬依赖失败退出（exit 1 + 自救命令），18 项全过。搞桩过程
+本身踩了三个坑（都是好的教训，写在测试文件头注释里）：git bash 的
+`ps` 看不到后台脚本的 cmdline（pgrep 桩改认 pid 文件）；`ln -s` 在
+msys 上半残（改用 REF="." 让 http.server 自己吃掉路径里的 `.` 段）；
+Windows 的 `python3` 常是应用商店残桩（`command -v` 认得但执行无效，
+探测时必须真跑一下）。
+
+顺带把 bootstrap 的 `setsid runsvdir` 做了无 setsid 回退（git bash
+就没有 setsid，Termux 上不受影响）。
+
+另外给第 3 步加了**源站自动回退**：默认依次试 raw.githubusercontent
+和 jsdelivr 镜像（URL 模板 `%R`/`%F` 占位），第一个源拉不齐就清掉
+残缺文件换下一个；全失败了才报「所有源站都没拉齐」并提示
+`DSH_RAW=http://…` 自建镜像和 git clone 备选。起因就是部署时撞上
+raw 抽风 —— 40 秒超时 × 16 个文件，用户体验极差，而换源后一行命令
+就过了。

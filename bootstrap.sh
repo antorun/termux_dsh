@@ -29,8 +29,8 @@ export SVDIR="${SVDIR:-$PREFIX/var/service}"
 export LOGDIR="${LOGDIR:-$PREFIX/var/log}"
 
 REF="${1:-main}"
-# 可覆盖：自建镜像 / 本地调试，如 DSH_RAW=http://127.0.0.1:8123
-RAW="${DSH_RAW:-https://raw.githubusercontent.com/antorun/termux_dsh}"
+# 源站模板在下面第 3 步（默认 raw + jsdelivr 回退；DSH_RAW 指定就只用它，
+# 用于自建镜像 / 本地调试，如 DSH_RAW=http://127.0.0.1:8123）
 
 WORK="$TMPDIR/dsh-boot-$(date +%s)"
 mkdir -p "$WORK" || { echo "✗ 建不了工作目录 $WORK"; exit 1; }
@@ -125,7 +125,12 @@ else
     exit 1
   fi
   say "未运行，后台拉起……"
-  setsid runsvdir "$SVDIR" >/dev/null 2>&1 &
+  # setsid 不是哪都有（git bash 就没有），缺了就直接后台跑
+  if command -v setsid >/dev/null 2>&1; then
+    setsid runsvdir "$SVDIR" >/dev/null 2>&1 &
+  else
+    runsvdir "$SVDIR" >/dev/null 2>&1 &
+  fi
   UP=0
   for i in $(seq 1 20); do
     pgrep -f "runsvdir $SVDIR" >/dev/null 2>&1 && { UP=1; break; }
@@ -141,8 +146,8 @@ else
 fi
 
 step "3/4 拉源文件（ref=${REF}）→ $WORK"
-# 下载 URL 带同一时间戳：绕过 raw 的 CDN 缓存，保证 16 个文件来自同一时刻的
-# 快照，不会出现「A 文件已是新版、B 文件还是旧版」的混合状态
+# 下载 URL 带同一时间戳：绕过 CDN 缓存，保证 16 个文件来自同一时刻的快照，
+# 不会出现「A 文件已是新版、B 文件还是旧版」的混合状态
 TS=$(date +%s)
 
 # 与 install/build-install-gateway.py 的 PAYLOADS 保持一致（新增 payload 时两处同步改；
@@ -164,34 +169,61 @@ runit/dsh-ctl-run
 install/install-gateway.head.sh
 install/build-install-gateway.py"
 
-cd "$WORK" || exit 1
-fail=0
-bytes=0
-got=0
 total=$(printf '%s\n' "$FILES" | grep -c .)
-for f in $FILES; do
-  if mkdir -p "$(dirname "$f")" && curl -fsSL --retry 2 -m 40 -o "$f" "$RAW/$REF/$f?${TS}"; then
-    sz=$(wc -c <"$f" 2>/dev/null || echo 0)
-    if [ "$sz" -gt 0 ]; then
-      got=$((got + 1)); bytes=$((bytes + sz))
+
+# 源站候选（URL 模板：%R = ref，%F = 文件路径）。
+# raw.githubusercontent 在国内网络经常抽风（40 秒超时），拉空了就自动换
+# jsdelivr 镜像接着试；DSH_RAW 指定了就只用它（自建镜像 / 本地调试）。
+if [ -n "${DSH_RAW:-}" ]; then
+  TEMPLATES=("$DSH_RAW/%R/%F")
+else
+  TEMPLATES=("https://raw.githubusercontent.com/antorun/termux_dsh/%R/%F"
+             "https://cdn.jsdelivr.net/gh/antorun/termux_dsh@%R/%F")
+fi
+
+cd "$WORK" || exit 1
+ok=0
+for tpl in "${TEMPLATES[@]}"; do
+  base="${tpl/\%R/$REF}"
+  base="${base/\%F/<文件>}"
+  urlbase="${tpl/\%R/$REF}"
+  say "从 $base 拉"
+  fail=0
+  got=0
+  bytes=0
+  for f in $FILES; do
+    url="${urlbase/\%F/$f}"
+    if mkdir -p "$(dirname "$f")" && curl -fsSL --retry 2 -m 40 -o "$f" "$url?${TS}"; then
+      sz=$(wc -c <"$f" 2>/dev/null || echo 0)
+      if [ "$sz" -gt 0 ]; then
+        got=$((got + 1)); bytes=$((bytes + sz))
+      else
+        echo "  ✗ 拉下来是空文件：$f"
+        fail=1
+      fi
     else
-      echo "  ✗ 拉下来是空文件：$f"
+      echo "  ✗ 拉不到：$url"
       fail=1
     fi
-  else
-    echo "  ✗ 拉不到：$RAW/$REF/$f"
-    fail=1
+  done
+  if [ "$got" = "$total" ]; then
+    line "源文件" "${got}/${total} 个，共 $((bytes / 1024)) KB"
+    ok=1
+    break
   fi
+  # 换下一个源之前清掉残缺的下载物，以免旧文件混进下一次
+  find "$WORK" -type f -size 0 -delete 2>/dev/null
+  [ "$got" -gt 0 ] && say "这个源只拉到 $got/$total，换下一个源"
 done
-if [ "$fail" != 0 ]; then
+
+if [ "$ok" != 1 ]; then
   echo
-  echo "✗ 有源文件没拉成。常见原因：到 raw.githubusercontent.com 网络不通，或 ref 写错。"
+  echo "✗ 所有源站都没拉齐。检查网络，或指定自建镜像：DSH_RAW=http://… bash。"
   echo "  备选（走 github.com 而不是 raw）："
   echo "    git clone --depth 1 https://github.com/antorun/termux_dsh.git"
   echo "    cd termux_dsh && bash bootstrap.sh"
   exit 1
 fi
-line "源文件" "${got}/${total} 个，共 $((bytes / 1024)) KB"
 
 step "4/4 构建 + 执行安装器"
 python3 install/build-install-gateway.py >"$WORK/build.log" 2>&1 \

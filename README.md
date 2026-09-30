@@ -207,6 +207,10 @@ bash uninstall.sh -y --all    # 全拆：连 dsh 包 / 用户数据 / 工作目�
 ## 测试
 
 ```bash
+# bootstrap 本地回归（造假 Termux 树 + 本地 http 源，三条路径：happy / 软依赖降级 /
+# 硬依赖失败退出）—— 不需要真机，git bash / linux / mac 都能跑
+bash tests/test-bootstrap-local.sh        # 期望「失败 0 项」（18 项）
+
 # 面板静态自检（语法 / 函数遮蔽 / onclick 与 id 引用 / 已删元素残留）
 node tests/audit-panel.js share/dsh-ctl/panel.html       # 期望 ✗ = 0
 
