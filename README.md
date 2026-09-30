@@ -81,20 +81,23 @@ Termux 里粘贴这一行：
 
     curl -fsSL https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | bash
 
-**国内网络装不上**（raw 超时）就走国内镜像：
+**github 拉不动文件**（国内常态）就走镜像那一行（内容与 raw 逐字节一致、无缓存滞后）：
 
-    curl -fsSL https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | DSH_MIRROR=cn bash
+    curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | bash
 
-源站说明：拉源文件时先问一下（curl 管道跑没法问，默认「自动」依次试 raw →
-jsdelivr 镜像）。环境变量 `DSH_MIRROR` 指定就不问：`cn`（国内镜像优先，raw 兜底）、
-`raw`（只用原始源，有代理 / 海外）、`auto`（自动，默认）。自建镜像用 `DSH_RAW`
-整个覆盖，如 `DSH_RAW=http://192.168.1.10:8000 bash …`。
+源站说明：默认就是**镜像优先 + 自动探速**——并行探各源（各拉 1KB），谁快用谁，
+都死了按预设顺序兜底（镜像 → raw）。不盲选：raw 通的网络里镜像反而慢十倍。
+`ghfast.top` 打不通时换个同款透传前缀（`gh-proxy.com` / `ghproxy.net` 等，格式一样：
+`https://前缀/https://raw.githubusercontent.com/…`），或退到 jsdelivr（有缓存滞后，
+刚推的新代码可能要等）。环境变量 `DSH_MIRROR` 指定就不问也不探速：`raw`（只用
+原始源，有代理 / 海外）、`jsdelivr`、`https://my.proxy/`（自己的代理前缀）。自建
+镜像用 `DSH_RAW` 整个覆盖，如 `DSH_RAW=http://192.168.1.10:8000 bash …`。
 
 可调项（都不写就用默认值）：
 
 | 变量 | 作用 |
 |---|---|
-| `DSH_MIRROR` | 源站：`cn` / `raw` / `auto`（默认） |
+| `DSH_MIRROR` | 源站：默认镜像优先；`raw` / `jsdelivr` / `https://…` 代理前缀 |
 | `DSH_RAW` | 整个源站换成一个 base URL（自建镜像 / 内网部署） |
 | `DSH_REPO` | 仓库 `owner/name`（默认 `antorun/termux_dsh`）—— fork 后部署直接用 |
 | `DSH_FILES` | 拉取清单（换行分隔的相对路径；默认那 16 个，与构建器 PAYLOADS 一致） |
@@ -127,9 +130,9 @@ jsdelivr 镜像）。环境变量 `DSH_MIRROR` 指定就不问：`cn`（国内�
 
 > 为什么不直接下载一个现成的安装器：`install-gateway.sh` 是生成物，按项目规矩
 > 不入版本库（改了 payload 忘重建、产物里长期内联旧版本的亏吃过）。bootstrap
-> 拉源当场构建，永远和仓库一致。raw 网络不通时的备选：`DSH_MIRROR=cn` 走国内
-> 镜像，或 `git clone` 后在仓库里跑同一条命令（失败时脚本会提示）。推送新版本后
-> raw / jsdelivr 各有几分钟 CDN 滞后，想立刻拿到最新版就等几分钟再跑。
+> 拉源当场构建，永远和仓库一致。默认就走镜像（ghfast 透传，无缓存，推完即刻生效）；
+> 镜像与 raw 逐字节一致（md5 对过）。拉不动时的备选：换个透传前缀、`DSH_MIRROR=jsdelivr`，
+> 或 `git clone` 后在仓库里跑同一条命令（失败时脚本会提示）。
 
 > **依赖装不上怎么办**：报错里若出现 `gtk3` / `libdecor` / `sdl2` /
 > `shared-mime-info` 之类，多半是设备上有「上次没配完的包」—— 任何 apt

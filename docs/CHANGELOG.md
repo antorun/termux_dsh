@@ -1359,13 +1359,12 @@ fork、自建镜像、内网部署不改脚本就能用。
 顺带把 bootstrap 的 `setsid runsvdir` 做了无 setsid 回退（git bash
 就没有 setsid，Termux 上不受影响）。
 
-另外给第 3 步加了**源站选择 + 自动回退**：拉源文件的 URL 用模板
-（`%R`/`%F` 占位），默认依次试 raw.githubusercontent 和 jsdelivr 镜像，
-第一个源拉不齐就清掉残缺文件换下一个，全失败才报「所有源站都没拉齐」
-并提示 `DSH_RAW=http://…` 自建镜像与 git clone 备选。在此之上，交互式
-跑（git clone 下来在终端里跑）会先问一下用哪个源 —— 1) 国内镜像
-（jsdelivr 优先，raw 兜底）2) 原始源（只用 raw）3) 自动（默认）；curl
-管道跑（如一键安装）stdin 不是 tty，不问、走自动。也可用环境变量
-`DSH_MIRROR=cn|raw|auto` 直接指定（README 一键安装段给了国内源的一键
-命令）。起因就是部署时撞上 raw 抽风 —— 40 秒超时 × 16 个文件；换源后
-一行命令就过。真机四种路径（cn / raw / auto / 交互选 1）都验过。
+**默认源站换镜像 + 并源探速**：用户反馈「主要是 github 拉文件有问题」——
+默认改为 **ghfast.top 透传镜像 + raw 兜底**（原先默认 raw 优先），但不盲选：
+多候选时**并行探速**（各源拉 1KB range 请求，`%{time_total}` 谁快用谁，都
+失败按原序），实测镜像慢十倍的网络会自动选回 raw。透传镜像无缓存：刚推的
+提交立刻拉得到（与 raw 逐字节一致，md5 对过）。jsdelivr 保留为显式选项
+（稳定 CDN，但分支文件有缓存滞后）；`DSH_MIRROR` 新增直接写代理前缀的用法
+（`DSH_MIRROR=https://my.proxy/`）。README 一键安装给出镜像版命令（双入口：
+raw 主、镜像备）。交互菜单改为：1) 国内镜像（默认）2) jsdelivr 3) 原始源。
+真机验证：探速行、逐文件计数、16/16、exit 0 全过。

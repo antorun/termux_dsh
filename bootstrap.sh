@@ -9,7 +9,9 @@
 #
 # 所有地址 / 清单都不写死，用环境变量覆盖（fork、自建镜像、内网部署直接用）：
 #   DSH_REPO=owner/name   仓库（默认 antorun/termux_dsh），模板和 git clone 回退都从它派生
-#   DSH_MIRROR=cn|raw|auto  源站：国内镜像 / 原始源 / 自动（默认；交互式跑会问一次）
+#   DSH_MIRROR=auto       源站模式（默认）：ghfast 透传镜像优先，raw 兜底
+#                         其他值：raw（只用原始源）/ jsdelivr / https://…（自己的代理前缀，
+#                         后面拼 raw 的完整 URL）
 #   DSH_RAW=http://…      整个源站用一个 base URL 覆盖（自建镜像 / 本地调试）
 #   DSH_FILES='a
 # b'                     拉取清单覆盖（换行分隔；默认那 16 个）
@@ -213,15 +215,15 @@ else
   if [ -z "${DSH_MIRROR:-}" ]; then
     if [ -t 0 ]; then
       echo "  源站选择（从哪拉源文件）："
-      echo "    1) 国内镜像（jsdelivr 优先，raw 兜底）—— 国内网络推荐"
-      echo "    2) 原始源（只用 raw.githubusercontent.com）—— 有代理 / 海外"
-      echo "    3) 自动（先 raw 后 jsdelivr）—— 默认"
-      printf '    输入 1/2/3，15 秒不选走 3：'
+      echo "    1) 国内镜像（ghfast 透传优先，raw 兜底）—— 国内网络推荐"
+      echo "    2) jsdelivr CDN（稳定，但分支文件有缓存滞后）"
+      echo "    3) 原始源（只用 raw.githubusercontent.com）—— 有代理 / 海外"
+      printf '    输入 1/2/3，15 秒不选走 1：'
       read -t 15 -n 1 MIRROR_ANS 2>/dev/null
       echo
       case "$MIRROR_ANS" in
-        1) DSH_MIRROR=cn ;;
-        2) DSH_MIRROR=raw ;;
+        2) DSH_MIRROR=jsdelivr ;;
+        3) DSH_MIRROR=raw ;;
         *) DSH_MIRROR=auto ;;
       esac
     else
@@ -229,8 +231,13 @@ else
     fi
   fi
   case "$DSH_MIRROR" in
-    cn|china|mirror|jsdelivr)
-      MIRROR_NAME="国内镜像（jsdelivr 优先，raw 兜底）"
+    http*)  # 直接给代理前缀：DSH_MIRROR=https://my.proxy/
+      MIRROR_NAME="自建代理（$DSH_MIRROR）"
+      TEMPLATES=("$DSH_MIRROR/https://raw.githubusercontent.com/$DSH_REPO/%R/%F"
+                 "https://raw.githubusercontent.com/$DSH_REPO/%R/%F")
+      ;;
+    jsdelivr|cdn)
+      MIRROR_NAME="jsdelivr CDN（raw 兜底）"
       TEMPLATES=("https://cdn.jsdelivr.net/gh/$DSH_REPO@%R/%F"
                  "https://raw.githubusercontent.com/$DSH_REPO/%R/%F")
       ;;
@@ -238,14 +245,46 @@ else
       MIRROR_NAME="原始源（raw.githubusercontent.com）"
       TEMPLATES=("https://raw.githubusercontent.com/$DSH_REPO/%R/%F")
       ;;
-    *)
-      MIRROR_NAME="自动（先 raw 后 jsdelivr）"
-      TEMPLATES=("https://raw.githubusercontent.com/$DSH_REPO/%R/%F"
-                 "https://cdn.jsdelivr.net/gh/$DSH_REPO@%R/%F")
+    *)  # auto / cn / mirror（默认）：透传镜像优先，无缓存，raw 兜底
+      MIRROR_NAME="镜像（ghfast 透传，raw 兜底）"
+      TEMPLATES=("https://ghfast.top/https://raw.githubusercontent.com/$DSH_REPO/%R/%F"
+                 "https://raw.githubusercontent.com/$DSH_REPO/%R/%F")
       ;;
   esac
 fi
 line "源站" "$MIRROR_NAME"
+
+# 多个候选时，先并行探速：各拉 1KB，谁先回 200/206 就谁优先（都失败保持原序）。
+# 不盲选镜像：raw 通的网络里镜像反而慢个十倍，反之亦然。
+if [ "${#TEMPLATES[@]}" -gt 1 ]; then
+  f0=$(printf '%s\n' "$FILES" | head -1)
+  PDIR="$WORK/probe"; mkdir -p "$PDIR"
+  i=0
+  for tpl in "${TEMPLATES[@]}"; do
+    i=$((i + 1))
+    u="${tpl/\%R/$REF}"; u="${u/\%F/$f0}"
+    ( curl -s -m 6 -r 0-1023 -o /dev/null -w '%{http_code} %{time_total}' "$u?${TS}" \
+        >"$PDIR/$i" 2>/dev/null ) &
+  done
+  wait
+  SORTED=(); REPORT=""
+  i=0
+  for tpl in "${TEMPLATES[@]}"; do
+    i=$((i + 1))
+    pt=$(cat "$PDIR/$i" 2>/dev/null)
+    code=${pt%% *}; t=${pt##* }
+    name="${tpl#*://}"; name="${name%%/*}"
+    case "$code" in
+      200|206) SORTED+=("$t|$tpl"); REPORT="$REPORT $name $(printf '%.1fs' "$t")" ;;
+      *) SORTED+=("99999|$tpl"); REPORT="$REPORT $name ✗" ;;
+    esac
+  done
+  # 按耗时升序（-s stable：同耗时的保持原顺序）
+  TEMPLATES=()
+  while IFS= read -r line; do TEMPLATES+=("${line#*|}"); done \
+    < <(printf '%s\n' "${SORTED[@]}" | sort -t'|' -k1,1g -s)
+  say "源站探速：$REPORT → 用 $(printf '%s' "${TEMPLATES[0]}" | sed 's|.*://||; s|/.*||')"
+fi
 
 cd "$WORK" || exit 1
 ok=0
