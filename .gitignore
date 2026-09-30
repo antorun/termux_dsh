@@ -8,6 +8,7 @@
 # 本地临时试跑脚本（真机升级验证等），用完即删
 .up-run.sh
 .up-poll.sh
+.up-verify.sh
 
 # WorkBuddy 工作区元数据
 .workbuddy/

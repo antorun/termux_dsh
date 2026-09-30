@@ -82,6 +82,8 @@ const STATE = {
   dshFlavor: {
     patcher: true,
     flockOk: true,
+    cmake: true,
+    ninja: true,
     share: '/data/data/com.termux/files/usr/share/dsh-ctl',
   },
   credentials: [

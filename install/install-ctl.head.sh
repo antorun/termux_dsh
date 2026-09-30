@@ -248,6 +248,10 @@ else
   printf '  补丁器已落位 patches.py      : %s  （期望 1）\n' "$([ -f "$PREFIX/share/dsh-ctl/patches.py" ] && echo 1 || echo 0)"
   printf '  补丁器能被 python 解析       : %s  （期望 1）\n' "$(python3 -c 'import ast,sys; ast.parse(open(sys.argv[1],encoding="utf-8").read())' "$PREFIX/share/dsh-ctl/patches.py" 2>/dev/null && echo 1 || echo 0)"
   printf '  flock 编译脚本已落位         : %s  （期望 1）\n' "$([ -f "$PREFIX/share/dsh-ctl/build-flock.sh" ] && echo 1 || echo 0)"
+  printf '  装包带 android30 编译标志    : %s  （期望 ≥2：常量定义 + 传给 npm 那一步）\n' "$(printf '%s' "$GW" | grep -c 'ANDROID30_FLAGS')"
+  printf '  装包那步用 NPM_BUILD_ENV     : %s  （期望 ≥1）\n' "$(printf '%s' "$GW" | grep -c 'NPM_UPGRADE_TIMEOUT, NPM_BUILD_ENV')"
+  printf '  runFile 支持 env 覆盖        : %s  （期望 ≥1）\n' "$(printf '%s' "$GW" | grep -c 'function runFile(file, args, timeoutMs, env)')"
+  printf '  dshFlavor 报出 cmake/ninja   : %s  （期望 ≥1）\n' "$(printf '%s' "$GW" | grep -c "cmake: fs.existsSync")"
   echo
   echo "  -- 健康探测 API（拿 active 那把密钥真打一次它接口上的模型列表）--"
   HP=$(printf '%s' "$STJ" | python3 -c '

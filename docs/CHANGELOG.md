@@ -624,7 +624,7 @@ https://registry.npmjs.org/-/package/@deepseek-ai%2Fdsh/dist-tags
 - 设备 `install-ctl.sh`：新增 10 条断言（面板有版本行 / 弹窗 / 网关两个接口 /
   回滚存在 / 补丁器已落位且能被 python 解析 / flock 编译脚本已落位）
 
-### 真机实测：`dshcheck` 通，`dshupgrade` 卡在 `koffi`（2026-09-30）
+### 真机实测：三轮才升上去，`koffi` 要 CMake + `statx` 要 Android 30（2026-09-30）
 
 **`dshcheck`（真机，`http://192.168.3.190:8030/ctl/api/dshcheck`）**
 
@@ -671,4 +671,90 @@ npm error Error: CMake does not seem to be available
 | `dsh-web` | run | run ✓ |
 
 **结论**：升级链路本身是好的，**卡点是新版本依赖 `koffi` 需要 CMake，而设备没装**。
-绕过方式（装 `cmake`+`ninja` 后重试 / 换源 / 等上游支持）属设备级变更，**待定**。
+
+#### 第二轮：装了 cmake 还是挂 —— 这次挂在 `statx`
+
+`pkg install -y cmake ninja`（59 秒，连带 libarchive/jsoncpp/libuv/rhash），
+`cmake 4.4.3` + `ninja 1.13.2` 就位后重跑。CMake 配置一路走通，
+**编译 `koffi_unity.cpp` 时炸**：
+
+```
+lib/native/base/base.cc:2967:19: error: cannot initialize a member subobject
+  of type '__u32' (aka 'unsigned int') with an lvalue of type 'const char *'
+ 2967 |     if (statx(fd, pathname, stat_flags, stat_mask, &sxb) < 0) {
+      |                   ^~~~~~~~
+lib/native/base/base.cc:2967:58: error: invalid operands to binary
+  expression ('statx' and 'int')
+```
+
+**这句报错极具误导性**：看着像「参数类型写错了」，其实是 **`statx` 这个「函数」根本没声明**。
+bionic 的 `<sys/stat.h>` 里它是这样藏着的：
+
+```c
+#if defined(__USE_GNU) && __BIONIC_AVAILABILITY_GUARD(30)
+int statx(int __dir_fd, const char* __path, int __flags,
+          unsigned __mask, struct statx* __buf) __INTRODUCED_IN(30);
+#endif
+```
+
+两个条件**缺一不可**：`__USE_GNU`（要 `-D_GNU_SOURCE`）+ API 级别 ≥ 30。
+少任何一条，`statx(fd, pathname, …)` 里的 `statx` 就只解析成**类型**，
+整句变成一次强制类型转换 —— 于是报「`__u32` 不能用 `const char *` 初始化」。
+
+设备实测（clang 21.1.8）最小复现，五选一：
+
+| 编译方式 | 结果 |
+|---|---|
+| 裸编译 | ✗ `statx` 未声明 |
+| `-D_GNU_SOURCE` | ✗ |
+| `-D_GNU_SOURCE -D__ANDROID_API__=30` | ✗（宏被内置定义覆盖） |
+| `-D_GNU_SOURCE -D__ANDROID_MIN_SDK_VERSION__=30` | ✗ `statx is unavailable: introduced in Android 30` |
+| **`--target=aarch64-unknown-linux-android30 -D_GNU_SOURCE`** | **✓ 编 / 链 / 跑全通** |
+
+C 与 C++（含 `<string>`/`<vector>`）都验过，且 **CMake 从环境变量 `CFLAGS`/`CXXFLAGS`
+吃得下这组标志**（已用最小 CMake 工程验证，正是 `cnoke.cjs` 的构建路径）。
+
+#### 第三轮：把标志塞进装包那一步，成了
+
+网关新增常量 + `runFile` 多一个 env 覆盖位：
+
+```js
+const ANDROID30_FLAGS = '--target=aarch64-unknown-linux-android30 -D_GNU_SOURCE'
+const NPM_BUILD_ENV = Object.assign({}, CHILD_ENV, {
+  CFLAGS: ANDROID30_FLAGS, CXXFLAGS: ANDROID30_FLAGS, CPPFLAGS: '-D_GNU_SOURCE',
+})
+// 只有装包这一步带，补丁器 / flock 编译脚本不受影响
+runFile(NPM_BIN, ['install', '-g', DSH_PKG + '@' + want], NPM_UPGRADE_TIMEOUT, NPM_BUILD_ENV)
+```
+
+**结果：`ok:true`，`0.1.7-rc.2 → 0.2.0-rc.2`**，各步退出码全 0：
+
+| 步 | 结果 |
+|---|---|
+| mv 备份 | 0（瞬时） |
+| `npm install -g @deepseek-ai/dsh@0.2.0-rc.2` | 0，**2 分钟**，530 个包 |
+| `python3 patches.py` | 0，**改动 14 处，跳过 0 处** |
+| `build-flock.sh` | 0，11776 B，自测「争用返回 EWOULDBLOCK」✓ |
+| `sv restart dsh-web` + `dsh --version` | 0，**`0.2.0-rc.2`** |
+
+**升级后实测（不是只看返回码）**：
+
+| 项 | 结果 |
+|---|---|
+| `dsh --version` | `0.2.0-rc.2` ✓ |
+| `require('koffi')` | ok ✓ |
+| `require('node-pty')` | ok ✓ |
+| flock `system.node` | 加载 ok，`tryLock` 是函数 ✓ |
+| `GET /ctl`（控制台页面） | `200` ✓ |
+| `/ctl/api/dshcheck` | `current=0.2.0-rc.2`、`hasUpdate:false` ✓ |
+| `/ctl/api/health` | 真打 `discovery-api.intern-ai.org.cn/v1/models` → **200，10 个模型，211 ms** ✓ |
+| `dsh-web` / `dsh-ctl` / `dsh-lan` | 三个都在跑 ✓ |
+| 安装器自带断言 | 全部 ✓（含新增 4 条编译标志组） |
+
+**成功时备份目录会留着**（`@deepseek-ai.bak-<ts>`，实测 **305 MB**），
+网关不会自己删 —— 确认新版没问题后手动清理：
+`rm -rf $PREFIX/lib/node_modules/@deepseek-ai.bak-*`。
+
+**顺带记一笔**：`install-ctl.sh` 的「全标启用」自测会把 active 归一到**第一把**
+（跑完是 `gateway-t1`，原先是 `atria-t1`）。它的还原基准是「归一化之后」的 md5，
+不是「跑之前」的 —— 所以跑安装器可能顺手改掉当前启用的那把。已知，未改。

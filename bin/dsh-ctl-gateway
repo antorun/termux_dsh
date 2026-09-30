@@ -78,6 +78,34 @@ const CHILD_ENV = Object.assign({}, process.env, {
   PATH: BIN + ':' + BIN + '/applets:' + (process.env.PATH || ''),
 })
 
+/* 装包时给原生模块用的编译标志。
+ *
+ * dsh 0.2.0+ 依赖 koffi，它的 cnoke.cjs 在 android-arm64 上拿不到预编译二进制，
+ * 会回退到 CMake 源码编译。而 bionic 的 <sys/stat.h> 里 statx() 长这样：
+ *   #if defined(__USE_GNU) && __BIONIC_AVAILABILITY_GUARD(30)
+ *   int statx(int, const char*, int, unsigned, struct statx*) __INTRODUCED_IN(30);
+ *   #endif
+ * 两个条件缺一不可：__USE_GNU 要 -D_GNU_SOURCE，API 级别要 >= 30。
+ * 少了任何一条，statx 就只剩「类型」而没有「函数」，于是
+ *   statx(fd, pathname, flags, mask, &sxb)
+ * 被解析成一次强制类型转换，报的就是那句莫名其妙的
+ *   cannot initialize a member subobject of type '__u32' with an lvalue of type 'const char *'
+ * —— 看着像参数类型写错了，其实是函数根本没声明。
+ *
+ * 设备实测（clang 21.1.8 / make / cmake 4.4.3 / ninja 1.13.2）：
+ *   裸编译                                     ✗ statx 不可见
+ *   -D_GNU_SOURCE                              ✗（API 级别不够）
+ *   -D_GNU_SOURCE -D__ANDROID_API__=30         ✗（宏被内置定义覆盖）
+ *   --target=aarch64-unknown-linux-android30 -D_GNU_SOURCE  ✓ 编/链/跑全通
+ * CMake 从环境变量 CFLAGS / CXXFLAGS 里吃得下这组标志（已用最小工程验证）。
+ */
+const ANDROID30_FLAGS = '--target=aarch64-unknown-linux-android30 -D_GNU_SOURCE'
+const NPM_BUILD_ENV = Object.assign({}, CHILD_ENV, {
+  CFLAGS: ANDROID30_FLAGS,
+  CXXFLAGS: ANDROID30_FLAGS,
+  CPPFLAGS: '-D_GNU_SOURCE',
+})
+
 const RETRY_MS = 5000
 const RECHECK_MS = 20000
 
@@ -92,12 +120,12 @@ const PANEL_HTML = (() => {
 
 /* ---------------------------------------------------------------- 基础工具 */
 
-function runFile(file, args, timeoutMs) {
+function runFile(file, args, timeoutMs, env) {
   return new Promise((resolve) => {
     const child = execFile(
       file,
       args,
-      { env: CHILD_ENV, timeout: timeoutMs || 60000, maxBuffer: 8 * 1024 * 1024 },
+      { env: env || CHILD_ENV, timeout: timeoutMs || 60000, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout, stderr) => {
         resolve({
           code: err && typeof err.code === 'number' ? err.code : err ? 1 : 0,
@@ -576,8 +604,14 @@ async function apiDshUpgrade(body) {
   }
 
   // 2) 装新版
-  const nr = await runFile(NPM_BIN, ['install', '-g', DSH_PKG + '@' + want], NPM_UPGRADE_TIMEOUT)
-  steps.push({ cmd: 'npm install -g ' + DSH_PKG + '@' + want, code: nr.code, out: clipTail(nr.out, 4000) })
+  // 装包这一步单独带编译标志：0.2.0+ 的 koffi 要现编，而 bionic 上 statx() 必须
+  // 同时有 -D_GNU_SOURCE 和 API>=30 才可见（见 NPM_BUILD_ENV 那段注释）。
+  const nr = await runFile(NPM_BIN, ['install', '-g', DSH_PKG + '@' + want], NPM_UPGRADE_TIMEOUT, NPM_BUILD_ENV)
+  steps.push({
+    cmd: 'npm install -g ' + DSH_PKG + '@' + want,
+    code: nr.code,
+    out: clipTail(nr.out, 4000),
+  })
   const nowVer = installedVersion()
   if (nr.code !== 0 || nowVer !== want) {
     return await rollback('装 ' + want + ' 这一步没成（npm 退出码 ' + nr.code + '，落盘版本 ' + (nowVer || '读不到') + '）。')
@@ -684,6 +718,10 @@ async function buildState() {
     dshFlavor: {
       patcher: fs.existsSync(PATCHER),
       flockOk: flockNativeOk(),
+      // 0.2.0+ 的 koffi 没有 android-arm64 预编译包，装的时候要 CMake 现编。
+      // 先把这个位报出来，省得用户点了升级才发现缺工具。
+      cmake: fs.existsSync(BIN + '/cmake'),
+      ninja: fs.existsSync(BIN + '/ninja'),
       share: SHARE,
     },
     paths: { dshHome: DSH_HOME, keys: KEYS, serviceDir: SVD, sites: SITES_JSON, accounts: ACCOUNTS_JSON },
