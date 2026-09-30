@@ -907,16 +907,16 @@ curl -s -b ck.txt -X POST -H 'content-type: application/json' -d "$HP" "http://$
    包一层 `(function(){ … })()`；返回对象用 `JSON.stringify(...)`。
 7. **别复用上一轮的 ref**：`@ref` 是快照作用域的，列表重绘后编号会错位，
    曾把「点创建接口」点到「全部检测」上去。要稳就用 CSS 选择器。
-8. **改完先跑 `.remote/audit-panel.js`**（纯 Node，不开浏览器）：
+8. **改完先跑 `tests/audit-panel.js share/dsh-ctl/panel.html`**（纯 Node，不开浏览器）：
    语法 / 函数重复 / `on*` 引用是否都有定义 / `getElementById` 的 id 是否存在 /
    已删卡片残留 / 两层结构是否齐（`.arow` `.krow` `data-adet` `data-kdet` `#modal`）/
    **局部变量是否遮蔽函数名**。最后一条抓到过两次真 bug（`var key`、`var el`）。
-9. 本地版式迭代用 `.remote/preview-panel.js`（假数据，:8877，不写任何文件）：
+9. 本地版式迭代用 `tests/preview-panel.js`（假数据，:8877，不写任何文件）：
    每次请求现读 `dsh-ctl-panel.html`，改完刷新即可；它把 `/ctl/api/manifest` 也
    模拟成「改内存 STATE」，所以能验证「加完刷新还在」。
    **它监听 127.0.0.1 且日志逐请求打印**，排查「按钮到底有没有发请求」非常好用。
 10. **纯静态自检证明不了交互**：audit 只说明「函数在、字样在」，不说明「点开 ▸ 真出密钥列表」。
-   交互层跑 `.remote/test-panel-ui.js`（playwright headless，自己起 preview 假后端，
+   交互层跑 `tests/test-panel-ui.js`（playwright headless，自己起 preview 假后端，
     59 项断言：展开/收起、弹窗新增+编辑、加密钥、开关互斥、删密钥/删接口、刷新记忆）。
     ```bash
     cd .remote
@@ -982,7 +982,7 @@ curl -s -b ck.txt -X POST -H 'content-type: application/json' -d "$HP" "http://$
 所以 `healthAll` 现在只剩「页面加载时那一次静默自动探测」这一个调用点，
 而 `healthApi(sid)` 复用了同一套串行 + 复用 + 退避机制（见 6.8.11）。
 
-**验证方式（不用真机也能验）**：给 `.remote/preview-panel.js` 的 `/ctl/api/health` 加一句
+**验证方式（不用真机也能验）**：给 `tests/preview-panel.js` 的 `/ctl/api/health` 加一句
 「同一 keyVar 第一次必回 429」，看它的**逐请求日志**：每把密钥应出现**两次**请求
 （429 → 退避 → 200），多把之间串行不重叠；等 20 秒后再点每把只打 1 次；
 20 秒内再点一次，日志里**一个新请求都没有**。
@@ -1114,7 +1114,7 @@ curl -s -b ck.txt -X POST -H 'content-type: application/json' -d "$HP" "http://$
   里原来都有局部 `var el = …`，全得改名（`node`），否则就是那个
   「局部变量遮蔽全局函数」的老坑（`audit-panel.js` 会直接报 ✗）。
 
-**这次的验证（59 项，跑 `.remote/test-panel-ui.js`）**：真 chromium 驱动假后端，
+**这次的验证（59 项，跑 `tests/test-panel-ui.js`）**：真 chromium 驱动假后端，
 覆盖「接口地址是行主体 / 默认全收 / 展开的是密钥列表 / kadd 是最后一个子元素 /
 接口详情里没有接口设置 / 弹窗两种模式 / 非法地址不关弹窗且不发请求 /
 按接口加密钥且环境变量名不撞 / 跨接口开关互斥 / 关不掉自己 / 删密钥删接口 / 刷新记忆展开态 /
@@ -1180,12 +1180,12 @@ curl -s -b ck.txt -X POST -H 'content-type: application/json' -d "$HP" "http://$
 
 **验证（都不截图）**
 
-- `.remote/audit-panel.js`：结构组断言 `data-kedit=` / `data-kdel=` / `class="c-act"` /
+- `tests/audit-panel.js share/dsh-ctl/panel.html`：结构组断言 `data-kedit=` / `data-kdel=` / `class="c-act"` /
   `data-ahealth=` 各 ≥1，`mKeyList|modalKeysHtml|modalKeyHtml` 为 0；
   弹窗组断言 `id="kmodal"` / `id="kBody"` / `keyModalHtml(` / `refreshKeyModal(` / `keyModalDel`。
   另注意：它统计「函数重复定义」必须用 `/^function …/gm`（**只看行首无缩进的顶层函数**）——
   面板里有几处同名的内部 `step()` / `next()`，用 `\bfunction\b` 会误报。
-- `.remote/test-panel-ui.js`：**99 项全过**。新增覆盖：接口弹窗里没有密钥区、
+- `tests/test-panel-ui.js`：**99 项全过**。新增覆盖：接口弹窗里没有密钥区、
   密钥行尾「编辑」开的是密钥弹窗（且接口弹窗没跟着开）、密钥弹窗里只有这一把、
   改备注列表同步、**没保存的密钥值关掉重开还在**、行尾「删除」直接删一行、
   弹窗里删除后弹窗自动关、接口级检测（见 6.8.11）。
@@ -1229,7 +1229,7 @@ function healthOne(sid, tid, silent, force, allowIdle){
 它和「检测」按钮的结果不是同一个集合。这条以前写在卡片说明里，后来用户把整段说明删了
 （见 6.8.12），所以现在只能靠列本身的语义 + `title=` tooltip 表达。
 
-**验证**：`.remote/test-panel-ui.js` 的 1b / 1c 两段。1b 点启用接口的检测，
+**验证**：`tests/test-panel-ui.js` 的 1b / 1c 两段。1b 点启用接口的检测，
 断言 20 秒内**不新增 health 请求**（复用页面加载那次结果）、不动展开状态、输出面板写结论；
 1c 展开一个下面有 2 把已存密钥（且全是待命）的接口，点检测，断言
 **发出 4 次 health 请求**（每把 429 一次 + 退避重试一次），
@@ -1375,7 +1375,7 @@ curl -s -b /tmp/cj -X POST -H 'Content-Type: application/json' \
 「进程 inotify watch 的 ino 是否等于文件 ino」来证明"监听了没"会得到假否 ——
 chokidar 靠目录事件重新注册，inode 对不上不代表没监听。**用行为（API 返回值）判定，别用 inode。**
 
-**现成复验脚本**：`.remote/verify-hot-reload.sh`（在设备上跑）
+**现成复验脚本**：`bin/verify-hot-reload.sh`（在设备上跑）
 —— 改一次 `displayName`、轮询 API 测延迟、md5 对账还原、报 pid 有没有变。
 连跑三次稳定在 2275–2303 ms。
 
