@@ -158,7 +158,8 @@ for (const [name, pat, want] of [
   ['确认更新入口 doUpgrade', /doUpgrade\(/, 1],
   ['升级走 /ctl/api/dshupgrade', /'dshupgrade'/, 1],
   ['查版本走 /ctl/api/dshcheck', /'dshcheck'/, 1],
-  ['执行中显示已等待秒数', /已等待/, 2],
+  // 已等待只在 renderJob 里出现一次；阈值 2 是旧版两处显示时的遗留
+  ['执行中显示已等待秒数', /已等待/, 1],
   ['执行中不给关弹窗', /执行中…/, 1],
   // 升 / 降必须分开说：切到 alpha 通道时远端可能比本机还旧（本机 0.2.0-rc.2 / alpha 0.1.7-alpha.2），
   // 一律写「更新到」会让人以为在升级。

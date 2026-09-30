@@ -1,20 +1,22 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # install-gateway.sh —— 网关优先（gateway-first）的 dsh Termux 方案入口。
-# 幂等，可重复执行。dsh 本体**不**在这里装 —— 装完网关后，在浏览器控制台里贴
-# 引导令牌，由控制台走 install / repair / upgrade / uninstall（全程网页看进度）。
+# 幂等，可重复执行。一键装全套：网关 + 控制台 + dsh 本体（最新版），
+# 最后把 dsh 的登录链接直接打到屏幕上。
 #
-# 做五件事：
+# 做六件事：
 #   1. 落网关全套：bin/ 下 9 个工具 + share/dsh-ctl/ 下控制台与生命周期脚本
 #      （patches.py、build-flock.sh、uninstall.sh、install-web-service.sh）
 #   2. 建 / 复位 runit 服务 dsh-ctl：<lan-ip>:8030 -> 127.0.0.1:3080
 #   3. 引导令牌：沿用现有的，或缺了就生成 32 位（600 权限，只随安装器打印一次）
 #   4. 启动 dsh-ctl，等出 run:
 #   5. 用令牌验证：拿得到面板、API 放行、错令牌 401、非白名单接口 403
+#   6. 装 dsh 本体（已装则跳过）：POST 网关 install 接口，终端实时滚进度，
+#      装完打印登录链接（http://<lan-ip>:8030/app?token=…）
 #
-# 为什么 dsh 不在这里装：
-#   dsh 是 300MB 级的 npm 包 + koffi/flock 现编，耗时长且要看好进度。网页控制台
-#   能给实时日志和分步退出码，SSH 里干等一个 npm install 体验最差。所以安装器
-#   只把「入口」装好 —— 哪怕 dsh 还没有，8030 上也已经有一个能点的地方。
+# 装哪个版本（环境变量，可选）：
+#   DSH_CHANNEL=latest|next|alpha   通道，默认 latest
+#   DSH_VERSION=x.y.z               手填版本号，优先于通道；留空 = 通道最新
+#   例：DSH_CHANNEL=next bash install-gateway.sh
 set -u
 
 export PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -54,7 +56,7 @@ done
 if [ -f "$PREFIX/lib/node_modules/@deepseek-ai/dsh/package.json" ]; then
   echo "  dsh 已装（$("$PREFIX/bin/dsh" --version 2>/dev/null || echo 版本未知)）—— 网关原地更新，不动 dsh"
 else
-  echo "  dsh 未装 —— 稍后在控制台里贴引导令牌继续安装"
+  echo "  dsh 未装 —— 第 6 步会自动装最新版（DSH_CHANNEL / DSH_VERSION 可选）"
 fi
 
 step "1. 落网关全套"
@@ -115,7 +117,7 @@ bash -n "$PREFIX/share/dsh-ctl/uninstall.sh" && echo "    uninstall.sh          
 bash -n "$PREFIX/share/dsh-ctl/install-web-service.sh" && echo "    install-web-service.sh   OK"
 PANEL="$PREFIX/share/dsh-ctl/panel.html"
 echo "    控制台页面 $(wc -c <"$PANEL") 字节"
-printf '    面板含安装向导(#wizard)    %s\n' "$(grep -c 'id="wizard"' "$PANEL")"
+printf '    面板含更新弹窗(#umodal)    %s\n' "$(grep -c 'id="umodal"' "$PANEL")"
 printf '    面板含任务弹窗(#jmodal)    %s\n' "$(grep -c 'id="jmodal"' "$PANEL")"
 printf '    面板含轮询(pollJob)        %s\n' "$(grep -c 'function pollJob' "$PANEL")"
 printf '    面板含引导令牌处理(bsToken) %s\n' "$(grep -c 'function bsToken' "$PANEL")"
@@ -180,52 +182,247 @@ tail -6 "$PREFIX/var/log/sv/dsh-ctl/current" 2>/dev/null | sed 's/^/  /'
 step "5. 验证"
 IP=$("$PREFIX/bin/dsh-lan-ip" 2>/dev/null || true)
 if [ -z "$IP" ]; then
-  echo "  ! 取不到局域网 IP（dsh-lan-ip）—— 检查 WiFi 连接；令牌仍有效，IP 有了就能用"
+  echo "  ! 取不到局域网 IP（dsh-lan-ip）—— WiFi 没连时网关会一直重试绑定，等 30 秒看它出来没："
+  for i in $(seq 1 15); do
+    sleep 2
+    IP=$("$PREFIX/bin/dsh-lan-ip" 2>/dev/null || true)
+    [ -n "$IP" ] && break
+    printf '    [%2d/15] 还是没有局域网 IP\n' "$i"
+  done
+fi
+if [ -z "$IP" ]; then
+  echo "  ✗ 局域网 IP 始终取不到 —— 网关在跑（IP 一有就自动绑上），但第 6 步装不了 dsh。"
+  echo "    连上 WiFi / 局域网后重跑本脚本：前 5 步秒过，第 6 步自动把 dsh 装上。"
   echo
   echo "=================================================================="
-  echo "  网关进程已就绪（局域网 IP 待定）。控制台地址：http://<手机IP>:$GW_PORT/ctl?bootstrap=$TOK"
+  echo "  控制台地址（IP 有了把 <手机IP> 换掉）：http://<手机IP>:$GW_PORT/ctl?bootstrap=$TOK"
+  echo "  令牌：$TOK"
   echo "=================================================================="
   exit 0
 fi
 BASE="http://$IP:$GW_PORT"
-command -v curl >/dev/null 2>&1 || { echo "  ! 没 curl，跳过验证"; exit 0; }
+HAVE_CURL=0
+command -v curl >/dev/null 2>&1 && HAVE_CURL=1
 
-# 服务刚 restart，给端口 15 秒
-for i in $(seq 1 15); do
-  code=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "$BASE/ctl" 2>/dev/null || true)
-  [ "$code" != "000" ] && [ -n "$code" ] && break
-  sleep 1
-done
+# 没 curl 就不自检了：第 6 步的轮询脚本只用 node，自己有 60 秒重试。
+if [ "$HAVE_CURL" = 1 ]; then
+  # 服务刚 restart，给端口 15 秒
+  for i in $(seq 1 15); do
+    code=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "$BASE/ctl" 2>/dev/null || true)
+    [ "$code" != "000" ] && [ -n "$code" ] && break
+    sleep 1
+  done
 
-printf '  /ctl 无令牌           : %s  （期望 200：引导页，贴令牌的表单）\n' \
-  "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl")"
-printf '  /ctl?bootstrap=<对的> : %s  （期望 200：控制台面板）\n' \
-  "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl?bootstrap=$TOK")"
-printf '  面板含向导 #wizard    : %s  （期望 ≥1）\n' \
-  "$(curl -s -m 8 "$BASE/ctl?bootstrap=$TOK" | grep -c 'id="wizard"')"
-printf '  state 带令牌头        : %s  （期望 ok:true）\n' \
-  "$(curl -s -m 8 -X POST -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" -d '{}' "$BASE/ctl/api/state" | grep -o '"ok":true' | head -1)"
-printf '  state 带错令牌头      : %s  （期望 401）\n' \
-  "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H 'x-bootstrap-token: WRONGTOKEN0123456789' -d '{}' "$BASE/ctl/api/state")"
-printf '  非白名单接口 save     : %s  （期望 403：引导令牌不能改配置）\n' \
-  "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" -d '{}' "$BASE/ctl/api/save")"
-echo
-echo "-- 日志尾部 --"
-tail -4 "$PREFIX/var/log/sv/dsh-ctl/current" 2>/dev/null | sed 's/^/  /'
+  printf '  /ctl 无令牌           : %s  （期望 200：引导页，贴令牌的表单）\n' \
+    "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl")"
+  printf '  /ctl?bootstrap=<对的> : %s  （期望 200：控制台面板）\n' \
+    "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$BASE/ctl?bootstrap=$TOK")"
+  printf '  面板含更新弹窗 #umodal  : %s  （期望 ≥1）\n' \
+    "$(curl -s -m 8 "$BASE/ctl?bootstrap=$TOK" | grep -c 'id="umodal"')"
+  printf '  state 带令牌头        : %s  （期望 ok:true）\n' \
+    "$(curl -s -m 8 -X POST -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" -d '{}' "$BASE/ctl/api/state" | grep -o '"ok":true' | head -1)"
+  printf '  state 带错令牌头      : %s  （期望 401）\n' \
+    "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H 'x-bootstrap-token: WRONGTOKEN0123456789' -d '{}' "$BASE/ctl/api/state")"
+  printf '  非白名单接口 save     : %s  （期望 403：引导令牌不能改配置）\n' \
+    "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" -d '{}' "$BASE/ctl/api/save")"
+  echo
+  echo "-- 日志尾部 --"
+  tail -4 "$PREFIX/var/log/sv/dsh-ctl/current" 2>/dev/null | sed 's/^/  /'
+else
+  echo "  ! 没 curl，自检跳过（pkg install curl 后重跑可看），直接装 dsh。"
+fi
+
+step "6. 装 dsh 本体"
+DSH_PKG_JSON="$PREFIX/lib/node_modules/@deepseek-ai/dsh/package.json"
+DSH_CHANNEL="${DSH_CHANNEL:-latest}"
+case "$DSH_CHANNEL" in latest|next|alpha) ;;
+  *) echo "  ✗ DSH_CHANNEL 只能是 latest / next / alpha（当前：${DSH_CHANNEL}）"; exit 1 ;;
+esac
+DSH_VERSION="${DSH_VERSION:-}"
+APPURL=""
+if [ -f "$DSH_PKG_JSON" ]; then
+  echo "  dsh 已装（$("$PREFIX/bin/dsh" --version 2>/dev/null || echo 版本未知)）—— 不动它，升级走控制台「更新」。"
+  # 顺手从 state 接口掏登录链接；没 curl 就空着，banner 走回退文案。
+  if [ "$HAVE_CURL" = 1 ]; then
+    APPURL=$(curl -s -m 8 -X POST -H 'content-type: application/json' -H "x-bootstrap-token: $TOK" -d '{}' \
+      "$BASE/ctl/api/state" \
+      | grep -o '"dshUrl":"[^"]*"' | head -1 | sed 's/^"dshUrl":"//; s/"$//')
+  fi
+else
+  echo "  走网关 install 接口装 dsh（通道 $DSH_CHANNEL${DSH_VERSION:+，手填版本 $DSH_VERSION}）。npm 要几分钟，输出实时滚："
+  cat >"$TMPDIR/dsh-install-poll.js" <<'POLL_EOF'
+#!/usr/bin/env node
+// 由 install-gateway.sh 第 6 步写进 $TMPDIR：拿引导令牌调网关 install 接口装
+// dsh，轮询 jobstatus 把进度逐行打到终端；装完把登录链接写进结果文件（最后
+// 一个参数）。退出码 0 = 装好，1 = 没装成（原因打在最后一行）。
+// 只用 require('http')，不指望 node 18 才有的全局 fetch。
+'use strict'
+const http = require('http')
+const fs = require('fs')
+
+const base = process.argv[2] || ''
+const tok = process.argv[3] || ''
+const channel = process.argv[4] || 'latest'
+const version = process.argv[5] || ''
+const resultFile = process.argv[6] || ''
+
+const START_DEADLINE_MS = 60000      // 网关刚 restart / 端口没到，给 60 秒
+const POLL_MS = 2000
+const DEADLINE_MS = 25 * 60 * 1000   // 网关里 npm 自己的超时是 15 分钟，留余量
+const ERR_DEADLINE_MS = 30000        // 轮询拉不到现场：30 秒死线（网关重启 / 断网）
+
+const t0 = Date.now()
+let shown = 0
+let jobSeen = false
+let errSince = 0
+let retried = false
+
+// BASE 地址不能解析是永久错误，不进重试循环。
+try { new URL(base) } catch (e) {
+  out('✗ 网关地址不对：' + base)
+  process.exit(1)
+}
+
+function out(s) { process.stdout.write(s + '\n') }
+
+function post(path, bodyObj, timeoutMs, cb) {
+  const body = JSON.stringify(bodyObj)
+  let u
+  try { u = new URL(base + path) } catch (e) { return cb(new Error('网关地址不对：' + base)) }
+  let req
+  try {
+    req = http.request({
+      hostname: u.hostname,
+      port: u.port,
+      path: u.pathname,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        'x-bootstrap-token': tok,
+      },
+      timeout: timeoutMs || 30000,
+    }, (res) => {
+      let b = ''
+      res.setEncoding('utf8')
+      res.on('data', (d) => { b += d })
+      res.on('end', () => {
+        let j = null
+        try { j = JSON.parse(b) } catch (e) {}
+        cb(null, { code: res.statusCode, json: j, raw: b })
+      })
+    })
+  } catch (e) { return cb(e) }
+  req.on('error', (e) => cb(e))
+  req.on('timeout', () => { req.destroy(); cb(new Error('请求网关超时')) })
+  req.end(body)
+}
+
+function finish(ok, appUrl, why) {
+  try { if (resultFile) fs.writeFileSync(resultFile, ok ? (appUrl || '') : '') } catch (e) {}
+  if (ok) {
+    out('✓ dsh 装好了' + (appUrl ? '，登录链接：' + appUrl : '（网关没拿到局域网 IP，登录链接见控制台首页）'))
+    process.exit(0)
+  }
+  out('✗ ' + (why || '安装失败'))
+  process.exit(1)
+}
+
+const want = { channel }
+if (version) want.version = version
+
+// 1) 触发安装：端口没起来就重试到 60 秒死线（接口本身要查远端版本，超时也给足 60 秒）。
+function startInstall() {
+  post('/ctl/api/install', want, 60000, (err, r) => {
+    if (err || !r || r.code >= 500) {
+      if (Date.now() - t0 < START_DEADLINE_MS) {
+        if (!retried) { retried = true; out('⏳ 网关还没应答，重试中（最多 60 秒）……') }
+        return setTimeout(startInstall, 2000)
+      }
+      return finish(false, '', '连不上网关的 install 接口：' +
+        (err ? err.message : (r ? 'HTTP ' + r.code : '无响应')))
+    }
+    if (!r.json) return finish(false, '', 'install 接口返回不是 JSON：' + String(r.raw).slice(0, 200))
+    if (!r.json.ok) return finish(false, '', '网关拒绝安装：' + (r.json.out || '（没给原因）'))
+    if (!r.json.jobId) return finish(false, '', 'install 接口没返回 jobId')
+    poll(r.json.jobId)
+  })
+}
+
+// 2) 轮询现场：增量打印新行，等到 done / failed。
+function poll(jobId) {
+  post('/ctl/api/jobstatus', {}, 30000, (err, r) => {
+    if (err || !r || !r.json) {
+      if (!errSince) errSince = Date.now()
+      if (Date.now() - errSince > ERR_DEADLINE_MS) {
+        return finish(false, '', '连着 30 秒拉不到任务现场（网关重启 / 断网？）：' +
+          (err ? err.message : '看 $PREFIX/var/log/sv/dsh-ctl/current'))
+      }
+      return setTimeout(() => poll(jobId), POLL_MS)
+    }
+    errSince = 0
+    const job = r.json.job
+    if (job) {
+      jobSeen = true
+      if (job.lines) {
+        if (job.lines.length < shown) shown = 0   // 快照截头了（>160 行/2 秒），重打一遍
+        for (; shown < job.lines.length; shown++) out('  ' + job.lines[shown])
+      }
+      const res = job.result || {}
+      if (job.status === 'done' && res.ok) return finish(true, res.appUrl || '', '')
+      if (job.status === 'failed' || (job.status === 'done' && !res.ok)) {
+        return finish(false, '', '任务没跑成：' + (res.out || '（任务没给结果）'))
+      }
+    } else if (jobSeen) {
+      return finish(false, '', '任务找不到了（网关重启过？）。重跑安装脚本可再试。')
+    }
+    if (Date.now() - t0 > DEADLINE_MS) {
+      return finish(false, '', '等了 25 分钟还没完（npm 卡住了？）。重跑安装脚本可再试。')
+    }
+    setTimeout(() => poll(jobId), POLL_MS)
+  })
+}
+
+startInstall()
+POLL_EOF
+  node --check "$TMPDIR/dsh-install-poll.js" \
+    || { echo "  ✗ 轮询脚本没过语法检查（$TMPDIR/dsh-install-poll.js）"; exit 1; }
+  node "$TMPDIR/dsh-install-poll.js" "$BASE" "$TOK" "$DSH_CHANNEL" "$DSH_VERSION" "$TMPDIR/dsh-install.result"
+  if [ "$?" != 0 ]; then
+    echo
+    echo "======================================================================"
+    echo "  ✗ dsh 没装成 —— 网关已经在跑，随时能再试："
+    echo "    重跑本脚本（前 5 步秒过）：bash install-gateway.sh"
+    echo "    或在控制台手动装：http://$IP:$GW_PORT/ctl?bootstrap=$TOK"
+    echo "    网关日志：tail -50 $PREFIX/var/log/sv/dsh-ctl/current"
+    echo "======================================================================"
+    echo "  令牌：$TOK"
+    exit 1
+  fi
+  APPURL=$(tr -d '\n\r' <"$TMPDIR/dsh-install.result" 2>/dev/null || true)
+fi
 
 echo
 echo "======================================================================"
-echo "  ✓ 网关已就绪：http://$IP:$GW_PORT/"
+echo "  ✓ 全部就绪：网关 http://$IP:$GW_PORT/  +  dsh 本体"
 echo
-echo "  ① 打开（dsh 未装时从这里进，贴令牌或直接用下面带令牌的链接）："
+if [ -n "$APPURL" ]; then
+  echo "  ① dsh 登录链接（点开直接进主界面）："
+  echo "      $APPURL"
+else
+  echo "  ① dsh 登录链接：打开下面的控制台，首页就有。"
+fi
+echo "  ② 控制台（dsh 登录一次后自动转完整模式）："
 echo "      http://$IP:$GW_PORT/ctl?bootstrap=$TOK"
-echo "  ② 在页面上选通道 / 版本 →「开始安装」，进度实时滚；"
-echo "  ③ 装完用页面里给出的令牌链接登录 dsh，控制台自动转完整模式。"
 echo "======================================================================"
 echo "  令牌：$TOK"
 echo "  令牌只打印这一次（存在 $PREFIX/share/dsh-ctl/.bootstrap-token，600）。"
 echo "  再看一眼：cat $PREFIX/share/dsh-ctl/.bootstrap-token"
-echo "  dsh 装好并登录一次后它会自动作废 —— 那时候控制台改用 dsh 自己的 cookie。"
+echo "  今后只剩两件事："
+echo "    更新 dsh → 控制台「更新」（选通道 / 版本，可强制重装）"
+echo "    卸载     → bash $PREFIX/share/dsh-ctl/uninstall.sh -y"
+echo "              （-n 先预演；--all 连 dsh 包 / 用户数据一起拆）"
+echo "  dsh 装好并登录一次后令牌自动作废 —— 那时候控制台改用 dsh 自己的 cookie。"
 echo "======================================================================"
 echo
 echo "完成。"

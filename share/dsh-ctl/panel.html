@@ -166,25 +166,6 @@ th{color:var(--dim);font-weight:500;font-size:12px}
     <a href="/app"><button class="primary">进入 dsh 主界面 →</button></a>
   </div>
 
-  <!-- 网关优先：dsh 还没装时控制台只给这一张卡；装完它才看得见下面的配置 -->
-  <div class="card" id="wizard" style="display:none">
-    <h2>安装 dsh</h2>
-    <p class="muted" style="margin:0 0 10px">这台设备上还没有 dsh。选好通道和版本，网关会装包、打 Termux 补丁、起 dsh-web 服务，全程在这里看进度。</p>
-    <div class="g3">
-      <div><label>通道</label>
-        <select id="wChan" onchange="wChanPick()">
-          <option value="latest">latest</option>
-          <option value="next">next</option>
-          <option value="alpha">alpha</option>
-        </select></div>
-      <div><label>目标版本（留空 = 自动取该通道最新）</label>
-        <input id="wVer" placeholder="例如 0.2.0-rc.2"></div>
-      <div><label>&nbsp;</label>
-        <button class="primary" id="wGo" onclick="doInstall()">开始安装 →</button></div>
-    </div>
-    <p class="hint" style="margin:10px 0 0">装完后 dsh 主界面挂在 <a href="/app">/app</a>；用令牌登录一次，这里就变成完整控制台。</p>
-  </div>
-
   <div class="card">
     <h2>服务与运行环境</h2>
     <div class="row" id="services"></div>
@@ -196,11 +177,6 @@ th{color:var(--dim);font-weight:500;font-size:12px}
       <span class="vmsg" id="verMsg"></span>
     </div>
     <p class="muted" style="margin:6px 0 0" id="envline"></p>
-    <p class="row" style="margin:12px 0 0">
-      <button class="mini" id="btnRepair" style="display:none" onclick="doRepair()" title="不换包，只重打补丁 + 重建缺失的 flock 插件 + 重启 dsh-web。补丁被冲掉 / 服务起不来时用这个">修复 dsh</button>
-      <button class="mini danger" id="btnUninstall" style="display:none" onclick="doUninstall(false)" title="卸掉 dsh 程序和 dsh-web 服务；~/.dsh 用户数据保留，网关不动（还能重新装）">卸载 dsh</button>
-      <button class="mini danger" id="btnUninstallAll" style="display:none" onclick="doUninstall(true)" title="连网关一起卸：dsh、~/.dsh、网关服务和脚本全清。执行后这个页面就没了">卸载 dsh + 网关</button>
-    </p>
 
     <p class="row" style="margin:12px 0 0">
       <button onclick="load()">刷新</button>
@@ -349,7 +325,7 @@ th{color:var(--dim);font-weight:500;font-size:12px}
     <p class="hint" id="uFoot">升级期间 dsh-web 会重启，主界面断几十秒。任何一步失败都会自动退回升级前的版本（用改名备份，秒级还原）。</p>
   </div>
 </div>
-<!-- 安装 / 修复 / 卸载这些长任务：网关后台 job + 轮询现场，弹窗里看进度 -->
+<!-- 更新这种长任务：网关后台 job + 轮询现场，弹窗里看进度 -->
 <div id="jmodal" class="modal" style="display:none" onclick="if(event.target===this)closeJobModal()">
   <div class="mbox" style="max-width:720px">
     <div class="mhead">
@@ -1470,15 +1446,6 @@ function applyState(st){
   var hint = '配置落在 profiles/{web,headless}/cordis.patch.yml，清单存 ' + st.paths.sites + '，已存密钥在 ' + st.paths.keys + '。';
   if (st.migrated) hint = '（已从现有配置 / 旧账号清单读出，保存后会存进 ' + st.paths.sites + '）' + hint;
   document.getElementById('savehint').textContent = hint;
-  // 网关优先：dsh 没装 → 安装向导卡；卸载脚本在位 → 卸载按钮；装过了 → 修复按钮
-  var wiz = document.getElementById('wizard');
-  if (wiz) wiz.style.display = st.dshMissing ? '' : 'none';
-  var bR = document.getElementById('btnRepair');
-  if (bR) bR.style.display = st.dshMissing ? 'none' : '';
-  var bU = document.getElementById('btnUninstall');
-  if (bU) bU.style.display = st.uninstallAvailable ? '' : 'none';
-  var bUA = document.getElementById('btnUninstallAll');
-  if (bUA) bUA.style.display = st.uninstallAvailable ? '' : 'none';
 }
 
 function clearAll(){
@@ -1519,7 +1486,7 @@ function cmpVer(a, b){
 function renderVer(j){
   j = j || {};
   var cur = VER.cur || (ST && ST.dshVersion) || '';
-  document.getElementById('verTxt').textContent = cur || '?';
+  document.getElementById('verTxt').textContent = cur || ((ST && ST.dshMissing) ? '未安装' : '?');
 
   var flavor = (ST && ST.dshFlavor) || {};
   var patcher = (typeof j.patcher === 'boolean') ? j.patcher : flavor.patcher !== false;
@@ -1530,7 +1497,7 @@ function renderVer(j){
   document.getElementById('verNow').title = patcher
     ? '当前 dsh 版本。补丁器在位，这台设备可以直接升'
     : '当前 dsh 版本。补丁器缺失（' + (flavor.share || 'share/dsh-ctl') + '/patches.py）——' +
-      'npm 升级会把 Termux 补丁一起冲掉，补不回来服务就起不来，所以这里不给升。先重跑 install-ctl.sh。';
+      'npm 升级会把 Termux 补丁一起冲掉，补不回来服务就起不来，所以这里不给升。先重跑 install-gateway.sh。';
 
   var chipNew = document.getElementById('verNew');
   var btn = document.getElementById('btnUpd');
@@ -1551,6 +1518,7 @@ function renderVer(j){
   }
 
   if (!patcher) { msg.textContent = '补丁器缺失，升级入口已禁用'; msg.style.color = 'var(--err)'; }
+  if (ST && ST.dshMissing) { msg.textContent = 'dsh 还没装 —— 在设备上跑一次安装脚本（install-gateway.sh），它会一并把 dsh 最新版装上'; msg.style.color = 'var(--warn)'; }
   else if (!flockOk) { msg.textContent = 'flock 原生插件缺失（升级时会自动现编）'; msg.style.color = 'var(--warn)'; }
   else if (VER.latest && !VER.hasUpdate) { msg.textContent = '已是最新'; msg.style.color = ''; }
   else if (!msg.textContent || msg.textContent === '已是最新') { msg.textContent = ''; msg.style.color = ''; }
@@ -1664,18 +1632,18 @@ function doUpgrade(){
     function(){ return api('dshupgrade', { version: ver, channel: VER.channel, force: force }, true); });
 }
 
-/* ------------------------------------------------------- 生命周期任务：安装 / 修复 / 卸载
+/* ------------------------------------------------------- 生命周期任务：更新
  *
- * 这三个都是长任务（npm 装包几分钟起步，卸载还会把网关自己杀掉），不能挂在一次
- * HTTP 请求里等。网关把它们丢进后台 job，这里拿到 jobId 后轮询 /ctl/api/jobstatus：
- * 现场 160 行输出 + 每步退出码实时滚出来。卸载时网关会断连 —— 按断连 = 正在卸载处理。
+ * 更新是长任务（npm 装包几分钟起步），不能挂在一次 HTTP 请求里等。
+ * 网关把它丢进后台 job，这里拿到 jobId 后轮询 /ctl/api/jobstatus：
+ * 现场 160 行输出 + 每步退出码实时滚出来。
  */
-var JT = { running:false, poll:null, isUninstall:false, cb:null, misses:0, missDeadline:0 };
+var JT = { running:false, poll:null, cb:null, misses:0, missDeadline:0 };
 
-/** 打开任务弹窗并启动。fn() 必须返回 api() 的 promise（install / repair / uninstall / dshupgrade）。 */
+/** 打开任务弹窗并启动。fn() 必须返回 api() 的 promise（dshupgrade）。 */
 function openJobModal(title, hint, fn, opts){
   opts = opts || {};
-  JT = { running:false, poll:null, isUninstall:!!opts.isUninstall, cb:opts.cb || null, misses:0, missDeadline:0 };
+  JT = { running:false, poll:null, cb:opts.cb || null, misses:0, missDeadline:0 };
   document.getElementById('jTitle').textContent = title;
   document.getElementById('jHint').textContent = hint || '';
   var log = document.getElementById('jLog');
@@ -1711,7 +1679,7 @@ function jobModalAbort(msg){
   out('✗ 任务启动失败：' + msg);
 }
 
-/** 600ms 轮询一次现场；取不到（网关被卸了 / 重启中）时慢到 3s，并设死线。 */
+/** 600ms 轮询一次现场；取不到（网关重启中 / 网络抖）时慢到 3s，30 秒死线。 */
 function pollJob(){
   if (!JT.running) return;
   api('jobstatus', {}, true).then(function(j){
@@ -1722,17 +1690,12 @@ function pollJob(){
       renderJob(j.job);
       if (j.job.status !== 'running') { finishJobModal(j.job.result || { ok:false, out:'任务已结束' }); return; }
     } else {
-      // 取不到现场：卸载任务里这是预期（网关自己就是被卸的对象）；别的任务给 30 秒缓冲
+      // 取不到现场：网关可能在重启，给 30 秒缓冲再判死
       JT.misses++;
-      if (!JT.missDeadline) JT.missDeadline = Date.now() + (JT.isUninstall ? 180000 : 30000);
+      if (!JT.missDeadline) JT.missDeadline = Date.now() + 30000;
       if (Date.now() > JT.missDeadline) {
-        if (JT.isUninstall) {
-          finishJobModal({ ok:true, out:'网关已停止响应 —— 卸载已完成或正在进行。\n' +
-            '刷新页面还能打开 = 网关没被卸掉（只卸了 dsh）；打不开了就是连网关一起清干净了。再装请重跑 install-gateway.sh。' });
-        } else {
-          finishJobModal({ ok:false, out:'取不到任务状态超过 ' + (JT.isUninstall ? 180 : 30) +
-            ' 秒，放弃轮询。任务可能还在后台跑 —— 回设备看日志：$PREFIX/var/log/sv/dsh-ctl/current。' });
-        }
+        finishJobModal({ ok:false, out:'取不到任务状态超过 30 秒，放弃轮询。' +
+          '任务可能还在后台跑 —— 回设备看日志：$PREFIX/var/log/sv/dsh-ctl/current。' });
         return;
       }
     }
@@ -1752,7 +1715,7 @@ function renderJob(job){
   document.getElementById('jSteps').innerHTML = renderSteps(job.steps || []);
   document.getElementById('jWait').textContent =
     '正在执行… 已等待 ' + (job.elapsedS || 0) + ' 秒。' +
-    (JT.isUninstall ? '卸载后期会把网关自己也停掉，页面断连是正常的。' : '别关页面、别刷新。');
+    '别关页面、别刷新。';
 }
 
 /** 任务结束（完成或失败）：头部给结论，appUrl 给登录入口，state 落回面板。 */
@@ -1776,51 +1739,15 @@ function finishJobModal(result){
   out((r.ok ? '✓ ' : '✗ ') + (r.out || ''));
   if (r.state) applyState(r.state);
   if (typeof JT.cb === 'function') { var cb = JT.cb; JT.cb = null; try { cb(r); } catch (e) {} }
-  if (r.ok) checkDsh(true);   // 装 / 修 / 升完对一次远端，版本行立刻回真
+  if (r.ok) checkDsh(true);   // 升完对一次远端，版本行立刻回真
 }
 
-/** 运行中不许关（后台还在动，关了就失联）；卸载例外 —— 网关都要没了，关不关随你。 */
+/** 运行中不许关（后台还在动，关了就失联）。 */
 function closeJobModal(){
-  if (JT.running && !JT.isUninstall) return;
+  if (JT.running) return;
   if (JT.poll) { clearTimeout(JT.poll); JT.poll = null; }
   JT.running = false;
   document.getElementById('jmodal').style.display = 'none';
-}
-
-/** 安装向导：dsh 还没有时的唯一入口。版本留空 = 服务器自己取该通道最新。 */
-function doInstall(){
-  var chan = document.getElementById('wChan').value || 'latest';
-  var ver = (document.getElementById('wVer').value || '').trim();
-  if (ver && !/^\d+\.\d+\.\d+/.test(ver)) { out('版本号看起来不像 semver：' + ver); return; }
-  openJobModal('安装 dsh' + (ver ? ' ' + ver : '（' + chan + ' 最新）'),
-    'npm 装包 → 重打 Termux 补丁 → 起 dsh-web 服务',
-    function(){ return api('install', { channel: chan, version: ver }, true); });
-}
-
-/** 通道切换：远端版本表里有就带出来，省得手打。 */
-function wChanPick(){
-  var c = document.getElementById('wChan').value;
-  var t = (VER && VER.tags) || {};
-  if (t[c]) document.getElementById('wVer').value = t[c];
-}
-
-/** 修复：不换包，重打补丁 + 起服务。补丁被 npm 升级冲掉 / 服务起不来时用。 */
-function doRepair(){
-  if (!confirm('修复 dsh？\n不重装包，只重打 Termux 补丁、缺了的话现编 flock 插件、重启 dsh-web。\n过程中主界面会断几十秒。')) return;
-  openJobModal('修复 dsh', '重打补丁 → flock 插件 → 重启 dsh-web',
-    function(){ return api('repair', {}, true); });
-}
-
-/** 卸载：all=true 连网关一起卸，这个页面随后就断。 */
-function doUninstall(all){
-  if (!confirm(all
-    ? '完全卸载？dsh 程序、dsh-web 服务、~/.dsh 用户数据、网关（dsh-ctl 服务 + 全部脚本）都会被删。\n网关一旦停掉，这个控制台页面就再也不会打开了。'
-    : '卸载 dsh？\ndsh 程序和 dsh-web 服务会被删掉；~/.dsh 用户数据保留，网关不动（还能重新装）。')) return;
-  if (all && !confirm('再确认一次：这会把网关自己也卸掉，页面马上断。再装回来得重新执行 install-gateway.sh。')) return;
-  openJobModal(all ? '卸载 dsh + 网关' : '卸载 dsh',
-    all ? 'dsh → ~/.dsh → 网关工具 → 网关服务（这个页面会断）' : 'dsh 包 → dsh-web 服务',
-    function(){ return api('uninstall', { all: all }, true); },
-    { isUninstall: true });
 }
 
 /* ---------------------------------------------------------------- 其它 */
