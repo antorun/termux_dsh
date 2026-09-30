@@ -1304,3 +1304,28 @@ README「快速开始」整段重写，按用户要的四块：**安装环境**�
 八依赖齐全不重复装、runsvdir 已在运行、16 文件 278 KB、生成
 366KB 安装器、自检 16/16、验证六项全过（面板 200 / 本机直连 200 /
 state ok / 掩码 0 / save 401）。
+
+第二天在**另一台设备**上装时撞上 dpkg 死锁：
+
+```
+dpkg: error processing package libdecor (--configure):
+ dependency problems - leaving unconfigured
+sdl2 depends on libdecor; however: Package libdecor is not configured yet.
+Errors were encountered while processing: shared-mime-info gtk3 libdecor sdl2
+```
+
+根因不在本方案 —— `pkg install cmake ninja` 的依赖里没有 gtk3/sdl2，
+是那台设备**之前**装别的东西时留下了「配一半的包」（shared-mime-info
+的 postinst `update-mime-database` 常因内存不足失败 → gtk3 → libdecor →
+sdl2 依赖链全卡住），之后任何 apt 操作都被 dpkg 拖去先配完它们。
+
+bootstrap 的依赖环节因此改成三级防线：
+
+1. **软硬分开**：`curl / python / nodejs-lts / termux-services / clang /
+   make` 是硬依赖；`cmake / ninja` 只有 dsh 0.2.0+ 的 koffi 原生编译
+   要 —— 装不上只警告，不拦着装网关（网关、控制台、低版本 dsh 都
+   不需要它们），事后 `pkg install -y cmake ninja` 即可。
+2. **失败先自愈**：`dpkg --configure -a` 收拾半成品后重试一次安装。
+3. **降级重试**：还不行就只装硬依赖；全失败才退出，并在提示里直接
+   给出那串 pkg remove 命令（ gtk3 / libdecor / sdl2 /
+   shared-mime-info）让用户自救。

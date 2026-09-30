@@ -60,26 +60,55 @@ else
 fi
 
 # 依赖清单：探测命令 → 包名。已有的跳过（重跑脚本秒过），缺的才装。
-DEPS="curl:curl python:python3 node:nodejs-lts sv:termux-services clang:clang make:make cmake:cmake ninja:ninja"
-MISSING=""
-for d in $DEPS; do
+# 前六个是硬依赖；cmake / ninja 只有 dsh 0.2.0+ 的 koffi 原生编译要 ——
+# 装不上不拦着网关，等控制台装 dsh 时再说。
+CORE="curl:curl python:python3 node:nodejs-lts sv:termux-services clang:clang make:make"
+SOFT="cmake:cmake ninja:ninja"
+MISSING=""; SOFTMISS=""
+for d in $CORE $SOFT; do
   cmd="${d%%:*}"; pkg="${d#*:}"
   if command -v "$cmd" >/dev/null 2>&1; then
     ver=$("$cmd" --version 2>/dev/null | head -1 | cut -c1-40)
     line "$pkg" "已有 ${cmd}（${ver}）"
   else
-    MISSING="$MISSING $pkg"
+    # 软依赖记到另一份：它们能装就装，装不上只警告
+    case " $SOFT " in *" $d "*) SOFTMISS="$SOFTMISS $pkg" ;; *) MISSING="$MISSING $pkg" ;; esac
   fi
 done
 
-if [ -n "$MISSING" ]; then
-  say "装：${MISSING# }"
-  if pkg install -y $MISSING >"$WORK/pkg-install.log" 2>&1; then
+ALLMISS="${MISSING# }${MISSING:+ }${SOFTMISS# }"
+if [ -n "$ALLMISS" ]; then
+  say "装：$ALLMISS"
+  # 失败先自愈：设备上有「上次没配完的包」时，任何 apt 操作都会被 dpkg 拖去
+  # 配完它们，配不上就整个事务失败 —— 跟我们要装的包无关（报错里若出现
+  # gtk3 / libdecor / sdl2 / shared-mime-info 就是这个）。--configure -a 一把
+  # 收拾半成品，再重试一次。
+  if pkg install -y $ALLMISS >"$WORK/pkg-install.log" 2>&1; then
     line "pkg install" "ok"
   else
-    echo "✗ 依赖装不上，看日志：tail -30 $WORK/pkg-install.log"
-    tail -15 "$WORK/pkg-install.log" 2>/dev/null | sed 's/^/      /'
-    exit 1
+    say "第一次失败，dpkg --configure -a 收拾半成品后重试……"
+    dpkg --configure -a >>"$WORK/pkg-install.log" 2>&1 || true
+    if pkg install -y $ALLMISS >>"$WORK/pkg-install.log" 2>&1; then
+      line "pkg install" "ok（重试后成功）"
+    elif [ -z "$MISSING" ]; then
+      # 缺的只是 cmake/ninja：网关、控制台、低版本 dsh 都不需要它们
+      line "pkg install" "核心依赖 ok；cmake/ninja 装不上（不影响装网关，见下）"
+      echo "  ! cmake / ninja 没装上 —— 只有 dsh 0.2.0+ 的 koffi 原生编译要它。"
+      echo "    网关和控制台照装；之后在控制台装 dsh 时要是卡在 koffi，再补："
+      echo "      pkg install -y cmake ninja"
+    elif pkg install -y $MISSING >>"$WORK/pkg-install.log" 2>&1; then
+      line "pkg install" "核心依赖 ok；cmake/ninja 装不上（重试已跳过）"
+      echo "  ! cmake / ninja 没装上 —— 只有 dsh 0.2.0+ 的 koffi 原生编译要它。"
+      echo "    之后在控制台装 dsh 时要是卡在 koffi，再补：pkg install -y cmake ninja"
+    else
+      echo "✗ 依赖装不上，看日志：tail -30 $WORK/pkg-install.log"
+      tail -15 "$WORK/pkg-install.log" 2>/dev/null | sed 's/^/      /'
+      echo "  常见根因：设备上有「没配完的包」（报错里若出现 gtk3 / libdecor /"
+      echo "  sdl2 / shared-mime-info 就是它，跟我们要装的无关）："
+      echo "    pkg remove -y shared-mime-info gtk3 libdecor sdl2 && dpkg --configure -a"
+      echo "  然后重跑本命令。"
+      exit 1
+    fi
   fi
 else
   say "依赖齐全，不重复装"

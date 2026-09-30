@@ -103,7 +103,16 @@ Termux 里粘贴这一行：
 > 为什么不直接下载一个现成的安装器：`install-gateway.sh` 是生成物，按项目规矩
 > 不入版本库（改了 payload 忘重建、产物里长期内联旧版本的亏吃过）。bootstrap
 > 拉源当场构建，永远和仓库一致。raw 网络不通时的备选：`git clone` 后在仓库里
-> 跑同一条命令（失败时脚本会提示）。
+> 跑同一条命令（失败时脚本会提示）。推送新版本后 raw 有约 3 分钟 CDN 滞后，
+> 想立刻拿到最新版就等几分钟再跑。
+
+> **依赖装不上怎么办**：报错里若出现 `gtk3` / `libdecor` / `sdl2` /
+> `shared-mime-info` 之类，多半是设备上有「上次没配完的包」—— 任何 apt
+> 操作都会被 dpkg 拖去配完它们，配不上就整个事务失败，跟本方案无关。
+> 先试 `dpkg --configure -a`；还不行就把它俩删掉再重跑：
+> `pkg remove -y shared-mime-info gtk3 libdecor sdl2 && dpkg --configure -a`。
+> bootstrap 自己也会先 `--configure -a` 自愈一次。cmake / ninja 装不上
+> 不拦着装网关（只有 dsh 0.2.0+ 的 koffi 原生编译要它）。
 
 ### 使用方法
 
