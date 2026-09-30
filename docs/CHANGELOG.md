@@ -1264,3 +1264,43 @@ want=0 的「已删」项），它还抓出一个真 bug：重写时漏了 `id="
 playwright 的 `tests/test-panel-ui.js`（135 项真浏览器断言）退役 ——
 它绑着旧 DOM，且本机/设备都没有 chromium 可跑；同样的路径由不需要浏览器
 的 `panel-render-check.js` 覆盖。
+
+## 十六、安装入口全自动化（2026-09-30 深夜）
+
+用户要装到其他设备：「pkg install curl python 也要集成到安装脚本，
+脚本要去更新 termux 和装必要的包，输出整洁一点」。
+
+`bootstrap.sh` 从「只负责拉源+构建」变成**全套环境准备**：
+
+- **0. 检查运行环境**：确认在 Termux 里（`$PREFIX/bin/pkg` 存在），
+  否则提示去 F-Droid / GitHub Releases 装 Termux（应用商店版已停更）。
+- **1. pkg update + 依赖**：八个依赖（curl / python / nodejs-lts /
+  termux-services / clang / make / cmake / ninja —— 后四个是 dsh 0.2.0+
+  的 koffi 原生编译要用的）逐个探测，已有的跳过、缺的 `pkg install -y`。
+  pkg 几百行输出全部重定向到日志，只留一行结果；失败时才打 tail。
+- **2. 起 runit 守护**：termux-services 的自启在登录 shell 的
+  profile.d 里，curl|bash 这个 session 没跑过 profile —— 现场用
+  `setsid runsvdir $SVDIR &` 拉起并等它就绪（最多 20 秒），不然安装器
+  起不了服务。
+- **3/4. 拉源 + 构建 + 执行**：16 个文件的逐行输出压成一行汇总
+  （`16/16 个，共 278 KB`），失败项才逐条列。
+
+`install-gateway.head.sh` 输出同期浓缩（信息量不减）：
+
+- 备份步骤：N 个文件逐行列 → 一行「旧文件备份 N 个 → …」；
+- 自检：18 行 OK 列表 → `ck()` 收集器，一行「自检 16/16 项通过」，
+  失败项才列出并退出（以前自检失败也继续往下装）；
+- 去掉 `ls -la $SVDIR`、服务目录、日志尾部三处倾倒；
+- 修了步骤编号不一致（文案里两处「第 6 步」实为第 5 步）。
+
+README「快速开始」整段重写，按用户要的四块：**安装环境**（Android 7+ /
+无 root / Termux 别用应用商店版 / 网络 / 空间）、**一键安装**（它做哪
+七步、下载了什么、装了什么、备份了什么）、**使用方法**（三个地址表 +
+控制台三块主页 + 凭据分工）、**运行逻辑**（转发拓扑图、手机重启后
+打开 Termux 即恢复、划掉应用会被杀 → termux-wake-lock、热生效 vs
+必须重启的分界）。
+
+实测：设备上 `bash bootstrap.sh` 端到端 3 分钟跑完 —— pkg update ok、
+八依赖齐全不重复装、runsvdir 已在运行、16 文件 278 KB、生成
+366KB 安装器、自检 16/16、验证六项全过（面板 200 / 本机直连 200 /
+state ok / 掩码 0 / save 401）。

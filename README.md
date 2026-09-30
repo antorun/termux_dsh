@@ -40,7 +40,7 @@ dsh 本体是为 glibc Linux / macOS / Windows 构建的，在 Android 上会连
 | `runit/dsh-ctl-run` | `$SVDIR/dsh-ctl/run` | 服务 `dsh-ctl`：`<LAN-IP>:8030` |
 | `runit/dsh-lan-run` | `$SVDIR/dsh-lan/run` | 服务 `dsh-lan`：`<LAN-IP>:3080` |
 | `install/install.sh` | 推 `$TMPDIR` 执行 | 入口：打 JS 补丁 / 体检（`--check`） |
-| `bootstrap.sh`（仓库根） | curl 管道执行，不落地 | **一键入口**：从 GitHub raw 拉源 → 构建 `install-gateway.sh` → 执行（见「快速开始 · 0」） |
+| `bootstrap.sh`（仓库根） | curl 管道执行，不落地 | **一键入口**：pkg 更新 + 装依赖 → 起 runsvdir → 拉源 → 构建 `install-gateway.sh` → 执行（见「快速开始」） |
 | `install/uninstall.sh` | 同上 | install.sh 的逆操作（幂等）：`-n` 预演，默认保留 `~/.dsh` / dsh 包，`--all` 全拆 |
 | `install/patches.py` | 推 `$TMPDIR` 执行；**同时**落 `$PREFIX/share/dsh-ctl/` | 幂等补丁器，14 处改动带 marker，npm 升级后重跑即可 |
 | `install/build-flock.sh` | 推 `$TMPDIR` 执行；**同时**落 `$PREFIX/share/dsh-ctl/` | `clang -shared` 直编 `system.node`，**绕开 node-gyp**（它在 Termux 上编不出来） |
@@ -60,58 +60,98 @@ dsh 本体是为 glibc Linux / macOS / Windows 构建的，在 Android 上会连
 
 ## 快速开始
 
-### 0. 一键 curl（最省事）
+### 安装环境
 
-Termux 里只要 `pkg install curl python`，然后一行：
+| 项 | 要求 |
+|---|---|
+| 系统 | Android 7.0+，**不需要 root** |
+| Termux | 从 **F-Droid 或 GitHub Releases** 装；应用商店里的版本已停更，不要用 |
+| 网络 | 能访问 GitHub raw（拉源文件）、npm registry（装 dsh 本体，约 300 MB） |
+| 空间 | 约 500 MB（依赖包 + dsh npm 包 + 补丁备份） |
+| 手 | 会粘贴一行命令 |
+| 浏览器 | 局域网内任意设备（手机 / 电脑）都行 |
+
+依赖包（`curl` / `python` / `nodejs-lts` / `termux-services` / `clang` / `make` / `cmake` /
+`ninja`）由安装脚本自己判断、缺哪个装哪个 —— clang/make/cmake/ninja 是 dsh 0.2.0+ 的
+`koffi` 原生编译要用的，一起装上省得装 dsh 时卡住。
+
+### 一键安装（最省事）
+
+Termux 里粘贴这一行：
 
     curl -fsSL https://raw.githubusercontent.com/antorun/termux_dsh/main/bootstrap.sh | bash
 
-它从 GitHub raw 拉源文件、当场构建 `install-gateway.sh` 并执行 —— 落网关、起 8030、
-打印控制台地址（相当于自动完成下面 A 的第 1、2 步）。指定分支 / tag / commit：行尾加
-`bash -s <ref>`。之后照 A 的第 3、4 步在浏览器里装 dsh、走生命周期。
+指定分支 / tag / commit：行尾加 `bash -s <ref>`（如 `bash -s v0.2`）。
 
-为什么不直接下载现成安装器：`install-gateway.sh` 是生成物，按项目规矩不入版本库
-（改了 payload 忘重建、产物里长期内联旧版本的亏吃过）；bootstrap 拉源当场构建，
-永远和仓库一致。raw 网络不通时的备选：`git clone` 后在仓库里跑同一条命令（失败时
-脚本会提示）。
+**它会做什么**（全过程一条命令，几分钟）：
 
-### A. 网关优先（推荐）
+1. `pkg update` 更新软件源，缺的依赖包当场装齐
+2. 确认 runit 守护（runsvdir）在跑 —— 本 session 里现装 termux-services 时它还没自启，
+   脚本会后台拉起再继续
+3. 从 GitHub raw **下载 16 个源文件**（仓库里的 bin / share / install / runit，
+   共约 280 KB），放进临时目录
+4. 用 python3 把 `install-gateway.head.sh` + 14 个 payload **构建成单文件安装器**
+   `install-gateway.sh`（内联 base64，一次传输不失真），现场语法自检
+5. 执行安装器：**落 9 个工具到 `$PREFIX/bin/` + 控制台面板 + 生命周期脚本到
+   `$PREFIX/share/dsh-ctl/` + runit 服务 `dsh-ctl`**；旧文件备份到
+   `~/dsh-termux/backups/`，`~/.dsh` 用户配置原样保留
+6. 自检 16 项（每个落地文件的语法 / 面板结构锚点）→ 起服务 → 验证（面板 200、
+   本机直连 200、state 无凭据可读、明文密钥不外露、改配置接口 401）
+7. dsh 本体还没装就**顺手装最新版**（走网关 install 接口，npm 进度实时滚；已装
+   则跳过），最后把控制台和 dsh 登录链接打到屏幕上
 
-先装「入口」，再在浏览器里装 dsh 本体 —— 哪怕 dsh 还没有，8030 上已经有一个能点的地方。
+> 为什么不直接下载一个现成的安装器：`install-gateway.sh` 是生成物，按项目规矩
+> 不入版本库（改了 payload 忘重建、产物里长期内联旧版本的亏吃过）。bootstrap
+> 拉源当场构建，永远和仓库一致。raw 网络不通时的备选：`git clone` 后在仓库里
+> 跑同一条命令（失败时脚本会提示）。
 
-前提：Termux 里 `pkg install nodejs-lts python curl termux-services`（`termux-services` 装完
-重开 Termux，让 `runsvdir` 起来）。**dsh 本体不用手动 npm 装**，控制台会装。
+### 使用方法
 
-```bash
-# 1) 在任意能跑 python3 的机器上（本机即可），生成单文件安装器
-python3 install/build-install-gateway.py      # → install/install-gateway.sh
+装完之后**不用再开 SSH**，一切在浏览器里：
 
-# 2) 推到设备执行（scp / adb push / 任意方式；脚本幂等，可重复跑）
-scp install/install-gateway.sh <设备>:~/
-ssh <设备> 'bash ~/install-gateway.sh'
-#    → 落 9 个工具 + 面板 + 生命周期四件套 → 起 dsh-ctl 服务 → 打印控制台地址
-#    旧文件会被备份到 ~/dsh-termux/backups/，现有 ~/.dsh 配置原样保留
+| 地址 | 是什么 | 做什么 |
+|---|---|---|
+| `http://<手机IP>:8030/` | **控制台**（路由器模型，不问令牌） | 看状态 / 装修升卸 dsh / 改接口与密钥 |
+| `http://<手机IP>:8030/app` | **dsh 主界面** | 打开就进（网关自动接登录令牌） |
+| `http://127.0.0.1:8030/` | 同上，手机本机 | WiFi 没连也能用（网关在局域网 IP 与 loopback 上各有一个监听） |
 
-# 3) 浏览器打开 http://<LAN-IP>:8030/ 就是控制台（路由器模型：不问令牌、不问登录）
-#    → 选通道（latest / next / alpha）或手填版本 →「开始安装」，进度实时滚
-#    → 装完打开 http://<LAN-IP>:8030/app 就是 dsh 主界面（自动登录，见下）
+控制台主页三块：**当前生效**（哪个接口哪把密钥，进来看一眼就知道）、**接口与密钥**
+（点行展开，开关互斥，「保存并生效」写进 dsh）、**维护**（更新 / 卸载，高级折叠区里
+是版本对表、修复、服务状态、日志）。
 
-# 4) 之后的全生命周期都在控制台里：修复 / 更新 / 卸载，SSH 都不用开
+- 首次打开控制台：控制台先于 dsh 存在，页面上有「安装 dsh」向导，选通道
+  （latest / next / alpha）或手填版本 →「开始安装」，进度实时滚。
+- **查状态 / 装·修·升·卸 dsh 不用任何凭据**（局域网内打开即用，像路由器后台）；
+  **改配置（接口 / 密钥）要先登录 dsh** —— 打开过一次 `/app`，cookie 就对网关这个
+  地址生效。这是有意的分工：能动手改配置的入口要登录，看和装不用。
+- 卸载也能在控制台里点（= 后台 detached 跑 `uninstall.sh`），或命令行
+  `bash $PREFIX/share/dsh-ctl/uninstall.sh -y`（`-n` 先预演，`--all` 连用户数据一起拆）。
+- 清单里**缺模型的密钥**不会拖死保存：它们按「草稿」留在清单里（刷新不丢），
+  完整的接口照常写进 dsh，配齐模型后再保存就会写进去。
+
+### 运行逻辑（它在跑什么）
+
+```
+浏览器 :8030 ──> dsh-ctl 网关（runit 服务 dsh-ctl，node）
+                   ├─ /ctl, /ctl/api/*   控制台面板 + 控制面 API
+                   ├─ /app, /api/* …     透传（HTTP + WebSocket）
+                   └─ 本机 :8030 与 局域网IP:8030 两个监听
+                          │
+                          └──> dsh 本体（runit 服务 dsh-web，只听 127.0.0.1:3080）
 ```
 
-控制台是**路由器模型**：局域网内任何设备打开 8030 就是管理界面（像路由器后台一样），
-`state` / `install` / `repair` / `uninstall` / `jobstatus` / `dshcheck` / `dshupgrade` /
-`log` / `restart` 这些生命周期接口不用任何凭据。**改配置类的接口（`save` 等）一律 401** ——
-要先登录 dsh，cookie 就对网关这个地址生效；登录态下 `state` 才返回明文密钥，未登录只给掩码。
-
-`/app`（dsh 主界面）同样不用贴令牌链接：浏览器没有效登录时网关自取 dsh 的登录
-令牌补上（302 → dsh 按 authority 种 cookie → 落回干净的 `/app`），已经登录
-（含在别的 authority 登过、cookie 已过期这类陈旧状态）会重新走一次令牌登录。
-手机本机直接开 `http://127.0.0.1:8030/` 也行 —— 网关在局域网 IP 与 loopback
-上各有一个监听（WiFi 没连都能用）。
-
-清单里**缺模型的密钥**不会拖死保存：它们按「草稿」留在清单里（刷新不丢），
-完整的接口照常写进 dsh，配齐模型后再保存就会写进去。
+- **服务常驻靠 Termux**：`dsh-ctl` / `dsh-web` 是 runit 服务，runsvdir 由
+  termux-services 在每次打开 Termux 时自启。**手机重启后服务不会自己回来** ——
+  打开一次 Termux（或让 Termux 开机自启）就恢复了。
+- **关掉 Termux 应用（后台划掉）进程会被 Android 杀**。要长期挂机，执行一次
+  `termux-wake-lock`（或点通知里的 Acquire wakelock），之后即使划掉应用服务也活着。
+- **改配置热生效**：接口地址 / 协议 / 模型走 dsh 自带的 HMR，约 2 秒生效（重启
+  是多余的）；**新填的密钥值**走 runit 环境变量，必须 `sv restart dsh-web` ——
+  面板「保存并生效」一次都办了。
+- **更新 dsh = 装包 + 重打补丁**（npm 换包会冲掉 14 处 Termux 补丁），控制台
+  「更新」走五步链并带自动回滚，不用手动管（细节见下文第三节）。
+- 日志：`$PREFIX/var/log/sv/dsh-ctl/current`（网关）、`…/sv/dsh-web/current`；
+  控制台「高级」里也有查看按钮。
 
 > **dsh-lan 不用装**：它是无网关方案的局域网入口（`<lan-ip>:3080` 裸转发
 > + 注入 `--trusted-host`）。网关方案里这两件事 8030 与 `install-web-service.sh`

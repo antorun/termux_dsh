@@ -3,6 +3,10 @@
 # 幂等，可重复执行。一键装全套：网关 + 控制台 + dsh 本体（最新版），
 # 最后把 dsh 的登录链接直接打到屏幕上。
 #
+# 前置依赖（curl / python / nodejs-lts / termux-services / clang / make /
+# cmake / ninja）由 bootstrap.sh 统一装好；单独跑这个脚本时缺 node / sv
+# 会直接报对应的 pkg install 命令。
+#
 # 做五件事：
 #   1. 落网关全套：bin/ 下 9 个工具 + share/dsh-ctl/ 下控制台与生命周期脚本
 #      （patches.py、build-flock.sh、uninstall.sh、install-web-service.sh）
@@ -41,23 +45,26 @@ mkdir -p "$BAK" "$TMPDIR" "$PREFIX/share/dsh-ctl"
 
 step "0. 现状与备份"
 TS=$(date +%Y%m%d%H%M%S)
-ls -la "$SVDIR" 2>/dev/null | sed 's/^/  /'
+N=0
 for f in dsh-ctl-gateway dsh-web-url dsh-set-provider dsh-set-key dsh-lan-gateway dsh-lan-ip dsh-patch-lan-settings verify-hot-reload.sh; do
-  if [ -f "$PREFIX/bin/$f" ]; then
-    cp -a "$PREFIX/bin/$f" "$BAK/$f.$TS" && echo "  bin/$f -> $BAK/$f.$TS"
-  fi
+  [ -f "$PREFIX/bin/$f" ] && cp -a "$PREFIX/bin/$f" "$BAK/$f.$TS" && N=$((N + 1))
 done
-[ -f "$PREFIX/share/dsh-ctl/panel.html" ] && cp -a "$PREFIX/share/dsh-ctl/panel.html" "$BAK/panel.html.$TS" && echo "  panel.html -> $BAK/panel.html.$TS"
+[ -f "$PREFIX/share/dsh-ctl/panel.html" ] && cp -a "$PREFIX/share/dsh-ctl/panel.html" "$BAK/panel.html.$TS" && N=$((N + 1))
 for f in sites.json accounts.json; do
-  [ -f "$HOME/.dsh/$f" ] && cp -a "$HOME/.dsh/$f" "$BAK/$f.$TS" && echo "  ~/.dsh/$f -> $BAK/$f.$TS"
+  [ -f "$HOME/.dsh/$f" ] && cp -a "$HOME/.dsh/$f" "$BAK/$f.$TS" && N=$((N + 1))
 done
 for p in web headless; do
-  [ -f "$HOME/.dsh/profiles/$p/cordis.patch.yml" ] && cp -a "$HOME/.dsh/profiles/$p/cordis.patch.yml" "$BAK/cordis.patch.$p.$TS" && echo "  profiles/$p/cordis.patch.yml -> $BAK/"
+  [ -f "$HOME/.dsh/profiles/$p/cordis.patch.yml" ] && cp -a "$HOME/.dsh/profiles/$p/cordis.patch.yml" "$BAK/cordis.patch.$p.$TS" && N=$((N + 1))
 done
+if [ "$N" -gt 0 ]; then
+  echo "  旧文件备份 ${N} 个 → $BAK/ *.$TS（~/.dsh 用户配置原样保留）"
+else
+  echo "  首次安装，没有旧文件要备份"
+fi
 if [ -f "$PREFIX/lib/node_modules/@deepseek-ai/dsh/package.json" ]; then
   echo "  dsh 已装（$("$PREFIX/bin/dsh" --version 2>/dev/null || echo 版本未知)）—— 网关原地更新，不动 dsh"
 else
-  echo "  dsh 未装 —— 第 6 步会自动装最新版（DSH_CHANNEL / DSH_VERSION 可选）"
+  echo "  dsh 未装 —— 第 5 步会自动装最新版（DSH_CHANNEL / DSH_VERSION 可选）"
 fi
 
 step "1. 落网关全套"
@@ -103,25 +110,39 @@ put "$PREFIX/share/dsh-ctl/install-web-service.sh" 755 <<'B6_I'
 B6_I
 
 echo "  -- 自检 --"
-node --check "$PREFIX/bin/dsh-ctl-gateway" && echo "    dsh-ctl-gateway          OK"
-sh   -n "$PREFIX/bin/dsh-web-url" && echo "    dsh-web-url              OK"
-bash -n "$PREFIX/bin/dsh-patch-lan-settings" && echo "    dsh-patch-lan-settings   OK"
-bash -n "$PREFIX/bin/dsh-set-provider" && echo "    dsh-set-provider         OK"
-bash -n "$PREFIX/bin/dsh-set-key" && echo "    dsh-set-key              OK"
-node --check "$PREFIX/bin/dsh-lan-gateway" && echo "    dsh-lan-gateway          OK"
-sh   -n "$PREFIX/bin/dsh-lan-ip" && echo "    dsh-lan-ip               OK"
-bash -n "$PREFIX/bin/verify-hot-reload.sh" && echo "    verify-hot-reload.sh     OK"
-python3 -c 'import ast,sys; ast.parse(open(sys.argv[1],encoding="utf-8").read())' \
-  "$PREFIX/share/dsh-ctl/patches.py" && echo "    patches.py               OK（语法）"
-bash -n "$PREFIX/share/dsh-ctl/build-flock.sh" && echo "    build-flock.sh           OK"
-bash -n "$PREFIX/share/dsh-ctl/uninstall.sh" && echo "    uninstall.sh             OK"
-bash -n "$PREFIX/share/dsh-ctl/install-web-service.sh" && echo "    install-web-service.sh   OK"
+OKC=0
+FAILS=""
+ck() {           # ck <描述> <命令…>：失败收集起来，最后一起列
+  local desc="$1"; shift
+  if "$@" >/dev/null 2>&1; then OKC=$((OKC + 1))
+  else FAILS="$FAILS\n    ✗ $desc"; fi
+}
+ck "dsh-ctl-gateway"          node --check "$PREFIX/bin/dsh-ctl-gateway"
+ck "dsh-web-url"              sh   -n "$PREFIX/bin/dsh-web-url"
+ck "dsh-patch-lan-settings"   bash -n "$PREFIX/bin/dsh-patch-lan-settings"
+ck "dsh-set-provider"         bash -n "$PREFIX/bin/dsh-set-provider"
+ck "dsh-set-key"              bash -n "$PREFIX/bin/dsh-set-key"
+ck "dsh-lan-gateway"          node --check "$PREFIX/bin/dsh-lan-gateway"
+ck "dsh-lan-ip"               sh   -n "$PREFIX/bin/dsh-lan-ip"
+ck "verify-hot-reload.sh"     bash -n "$PREFIX/bin/verify-hot-reload.sh"
+ck "patches.py"               python3 -c 'import ast,sys; ast.parse(open(sys.argv[1],encoding="utf-8").read())' \
+                                "$PREFIX/share/dsh-ctl/patches.py"
+ck "build-flock.sh"           bash -n "$PREFIX/share/dsh-ctl/build-flock.sh"
+ck "uninstall.sh"             bash -n "$PREFIX/share/dsh-ctl/uninstall.sh"
+ck "install-web-service.sh"   bash -n "$PREFIX/share/dsh-ctl/install-web-service.sh"
 PANEL="$PREFIX/share/dsh-ctl/panel.html"
-echo "    控制台页面 $(wc -c <"$PANEL") 字节"
-printf '    面板含更新弹窗(#umodal)    %s\n' "$(grep -c 'id="umodal"' "$PANEL")"
-printf '    面板含任务弹窗(#jmodal)    %s\n' "$(grep -c 'id="jmodal"' "$PANEL")"
-printf '    面板含轮询(pollJob)        %s\n' "$(grep -c 'function pollJob' "$PANEL")"
-printf '    面板无令牌残留(bsToken)    %s\n' "$(grep -c 'function bsToken' "$PANEL")"
+export PANEL      # 下面 ck 里的 bash -c 子Shell要用
+ck "面板 含更新弹窗 #umodal"   bash -c "[ \"\$(grep -c 'id=\"umodal\"' \"\$PANEL\")\" -ge 1 ]"
+ck "面板 含任务弹窗 #jmodal"   bash -c "[ \"\$(grep -c 'id=\"jmodal\"' \"\$PANEL\")\" -ge 1 ]"
+ck "面板 含任务轮询 pollJob"   bash -c "[ \"\$(grep -c 'function pollJob' \"\$PANEL\")\" -ge 1 ]"
+ck "面板 无令牌残留 bsToken"   bash -c "[ \"\$(grep -c 'function bsToken' \"\$PANEL\")\" -eq 0 ]"
+echo "  自检 ${OKC}/16 项通过${FAILS:-}"
+if [ -n "$FAILS" ]; then
+  echo -e "$FAILS"
+  echo "  落地的文件有问题，装不了。把上面这几条重推一遍，或重跑 bootstrap。"
+  exit 1
+fi
+echo "  控制台页面 $(wc -c <"$PANEL") 字节"
 
 step "2. dsh-ctl 服务"
 HAD_SVC=0
@@ -140,7 +161,6 @@ LOGEOF
 chmod 755 "$SVDIR/dsh-ctl/log/run"
 rm -f "$SVDIR/dsh-ctl/down"
 [ "$HAD_SVC" = 1 ] && echo "  服务目录已存在（复位 run 脚本）" || echo "  新建服务目录"
-ls -la "$SVDIR/dsh-ctl" | sed 's/^/  /'
 command -v sv-enable >/dev/null 2>&1 && { sv-enable dsh-ctl >/dev/null 2>&1 && echo "  sv-enable dsh-ctl OK"; }
 
 step "3. 启动 dsh-ctl"
@@ -158,7 +178,6 @@ for i in $(seq 1 25); do
 done
 sv status dsh-ctl 2>/dev/null | sed 's/^/  /'
 [ "$UP" = 1 ] || { echo "  ✗ dsh-ctl 没起来，看日志：tail -50 $PREFIX/var/log/sv/dsh-ctl/current"; exit 1; }
-tail -6 "$PREFIX/var/log/sv/dsh-ctl/current" 2>/dev/null | sed 's/^/  /'
 
 step "4. 验证"
 IP=$("$PREFIX/bin/dsh-lan-ip" 2>/dev/null || true)
@@ -187,7 +206,7 @@ BASE="http://$IP:$GW_PORT"
 HAVE_CURL=0
 command -v curl >/dev/null 2>&1 && HAVE_CURL=1
 
-# 没 curl 就不自检了：第 6 步的轮询脚本只用 node，自己有 60 秒重试。
+# 没 curl 就不自检了：第 5 步的轮询脚本只用 node，自己有 60 秒重试。
 if [ "$HAVE_CURL" = 1 ]; then
   # 服务刚 restart，给端口 15 秒
   for i in $(seq 1 15); do
@@ -208,9 +227,6 @@ if [ "$HAVE_CURL" = 1 ]; then
     "$(curl -s -m 8 -X POST -H 'content-type: application/json' -d '{}' "$BASE/ctl/api/state" | grep -c '"value":"[^"]*')" || true
   printf '  改配置接口 save 需登录 : %s  （期望 401）\n' \
     "$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' -d '{}' "$BASE/ctl/api/save")"
-  echo
-  echo "-- 日志尾部 --"
-  tail -4 "$PREFIX/var/log/sv/dsh-ctl/current" 2>/dev/null | sed 's/^/  /'
 else
   echo "  ! 没 curl，自检跳过（pkg install curl 后重跑可看），直接装 dsh。"
 fi
