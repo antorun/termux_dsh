@@ -115,7 +115,8 @@ ssh <设备> 'bash ~/install-gateway.sh'
 
 > **dsh-lan 不用装**：它是无网关方案的局域网入口（`<lan-ip>:3080` 裸转发
 > + 注入 `--trusted-host`）。网关方案里这两件事 8030 与 `install-web-service.sh`
-> 已经做了，控制台服务卡里 `dsh-lan: 未安装` 是正常状态。
+> 已经做了，所以控制台的服务列表里只有 `dsh-web` 与 `dsh-ctl` ——
+> 旧装机的 dsh-lan 服务要是还在跑也不影响什么，卸载脚本照旧会清掉它。
 
 ### B. 手工路径（不想用控制台）
 

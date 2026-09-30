@@ -27,7 +27,6 @@ const STATE = {
   ok: true,
   services: [
     { name: 'dsh-web', up: true, installed: true },
-    { name: 'dsh-lan', up: true, installed: true },
     { name: 'dsh-ctl', up: true, installed: true },
   ],
   dshVersion: '0.1.7-rc.2',

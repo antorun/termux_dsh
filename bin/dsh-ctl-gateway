@@ -426,7 +426,10 @@ function readCredentials() {
 }
 
 function readServices() {
-  const names = ['dsh-web', 'dsh-lan', 'dsh-ctl']
+  // dsh-lan 不再上报：它是 3080 → 局域网的旧转发层，路由器模型下用不上
+  // （网关的 8030 就是局域网入口）。留着旧装机的 dsh-lan 服务跑也不影响
+  // 什么，卸载脚本照旧会清掉它。
+  const names = ['dsh-web', 'dsh-ctl']
   const res = []
   for (const n of names) {
     let raw = ''
